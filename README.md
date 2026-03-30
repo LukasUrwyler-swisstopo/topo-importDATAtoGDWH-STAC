@@ -13,6 +13,7 @@ Diese Scripts automatisieren den gesamten Prozess von der Datenvorbereitung bis 
 | Script | Verwendung |
 |--------|------------|
 | `1_allGDS_upload_GDWH_withCHECKxml.py` | Universalscript für alle GDS-Typen (SB_DOP, SB_DSM, SB_DSM_PUNKTWOLKE) |
+| `2_1_SB_DOP_16_FOLDERorganize_by_lineID.py` | Vorbereitung für das "2_2_SB_DOP_16..."-Script; Organisiert und verschiebt die 16BIT Daten im Quell-Pfad, in einzelne Import-Ordner (nach Aufnahmezeitpunkt) |
 | `2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py` | Spezialisiert für GDS `SB_DOP_16` (SB_DOP_16) |
 
 ---
