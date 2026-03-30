@@ -20,13 +20,15 @@ Diese Scripts automatisieren den gesamten Prozess von der Datenvorbereitung bis 
 
 ## Ablauf
 
-1. **Sicherheits-Check** – Vorschau der XML-Attribute anhand einer Beispieldatei; Benutzer bestätigt mit `Y/N`
-2. **XML-Generierung** – Für jede `.tif`/`.tiff`/`.laz`-Datei wird ein XML mit Metadaten erstellt (abhängig von GDS und Dateiname)
-3. **Daten ins Bucket kopieren** – Dateien und XMLs werden in das korrekte GDWH-Bucket (NV-Ordner) kopiert; bei `SB_DSM_PUNKTWOLKE` zusätzlich in `PrecalculatedFormats`
-4. **files.csv erstellen** – Pro Datei wird ein Eintrag mit MD5-Hash, TileKey und WKT-Footprint in `files.csv` geschrieben
-5. **Validierung** – Mit `GDWH/CHECK` werden alle bereitgestellten Daten geprüft
-6. **Import nach GDWH** – Nach erfolgreicher Validierung werden die Daten in GDWH importiert
-7. **Integration nach STAC** – Die importierten Daten werden automatisiert in STAC integriert
+1. **GDWH-Datenpacket** – im GDWH Portal (swisstopo) ein Datenpaket für jedes GDS erstellen, Bucket-Pfad kopieren.
+2. **edit-pyScript** – Bucket-Pfad, Quell-Pfad und Meta-Informationen im Script entsprechend anpassen, Script mit osgeo4shell/python  ausführen
+3. **Sicherheits-Check** – Vorschau der XML-Attribute anhand einer Beispieldatei; Benutzer bestätigt mit `Y/N`
+4. **XML-Generierung** – Für jede `.tif`/`.tiff`/`.laz`-Datei wird ein XML mit Metadaten erstellt (abhängig von GDS und Dateiname)
+5. **Daten ins Bucket kopieren** – Dateien und XMLs werden in das korrekte GDWH-Bucket (NV-Ordner) kopiert; bei `SB_DSM_PUNKTWOLKE` zusätzlich in `PrecalculatedFormats`
+6. **files.csv erstellen** – Pro Datei wird ein Eintrag mit MD5-Hash, TileKey und WKT-Footprint in `files.csv` geschrieben
+7. **Validierung** – Mit `GDWH/CHECK` werden alle bereitgestellten Daten geprüft
+8. **Import nach GDWH** – Nach erfolgreicher Validierung werden die Daten in GDWH importiert
+9. **Integration nach STAC** – Die importierten Daten werden automatisiert in STAC integriert
 
 ---
 
