@@ -80,7 +80,7 @@ Ziel   = r"\\server\...\BUCKET_INT\RASTER\SB_DOP\2025_PROJEKTNAME_DOP"  # Zielbu
 | GDS | Datenformat | Besonderheiten |
 |-----|------------|----------------|
 | `SB_DOP` | `.tif` / `.tfw` | TileKey aus Dateiname (vor `_LV95`) |
-| `SB_DOP_16` | `.tif` | 16BIT; separate `allAreaLineIDs` für AcquisitionTimes |
+| `SB_DOP_16` | `.tif` | 16BIT; separate für AcquisitionTimes als die andern GDS (Mosaike) |
 | `SB_DSM` | `.tif` (DSM + Hillshade) | NoData automatisch; TileKey fix `1000` |
 | `SB_DSM_PUNKTWOLKE` | `.laz` | Kein NoData; Kopie in `PrecalculatedFormats` |
 
