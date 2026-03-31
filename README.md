@@ -23,13 +23,13 @@ Diese Scripts automatisieren den gesamten Prozess von der Datenvorbereitung bis 
 1. **GDWH-Datenpacket** – im GDWH Portal (swisstopo) ein Datenpaket für jedes GDS erstellen, Bucket-Pfad kopieren.
 2. **edit-pyScript** – Bucket-Pfad, Quell-Pfad und Meta-Informationen im Script entsprechend anpassen, Script mit osgeo4shell/python  ausführen:
 3. **Script** - Script enthält folgende Funktionen:
-   - **Sicherheits-Check** – Vorschau der XML-Attribute anhand einer Beispieldatei; Benutzer bestätigt mit `Y/N`
-   - **XML-Generierung** – Für jede `.tif`/`.tiff`/`.laz`-Datei wird ein XML mit Metadaten erstellt (abhängig von GDS und Dateiname)
-   - **Daten ins Bucket kopieren** – Dateien und XMLs werden in das korrekte GDWH-Bucket (NV-Ordner) kopiert; bei `SB_DSM_PUNKTWOLKE` zusätzlich in `PrecalculatedFormats`
-   - **files.csv erstellen** – Pro Datei wird ein Eintrag mit MD5-Hash, TileKey und WKT-Footprint in `files.csv` geschrieben
-   - **Validierung** – Mit `GDWH/CHECK` werden alle bereitgestellten Daten geprüft
-   - **Import nach GDWH** – Nach erfolgreicher Validierung werden die Daten in GDWH importiert
-   - **Integration nach STAC** – Die importierten Daten werden automatisiert in STAC integriert
+   - Sicherheits-Check – Vorschau der XML-Attribute anhand einer Beispieldatei; Benutzer bestätigt mit `Y/N`
+   - XML-Generierung – Für jede `.tif`/`.tiff`/`.laz`-Datei wird ein XML mit Metadaten erstellt (abhängig von GDS und Dateiname)
+   - Daten ins Bucket kopieren – Dateien und XMLs werden in das korrekte GDWH-Bucket (NV-Ordner) kopiert; bei `SB_DSM_PUNKTWOLKE` zusätzlich in `PrecalculatedFormats`
+   - files.csv erstellen – Pro Datei wird ein Eintrag mit MD5-Hash, TileKey und WKT-Footprint in `files.csv` geschrieben
+4. **GDWH-CHECK** – Im GDWH- Portal wird mit `CHECK` werden die bereitgestellten Daten des Datenpackets geprüft.
+5. **Import nach GDWH** – Nach erfolgreichem Check/Validierung, werden die Daten in GDWH importiert
+   - Integration nach STAC – Die importierten Daten werden automatisiert in STAC integriert
 
 ---
 
