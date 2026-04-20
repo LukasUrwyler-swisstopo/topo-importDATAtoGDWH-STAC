@@ -76,7 +76,7 @@ meta_info = (Attribut-/ Meta-Informationen korrekt ausfüllen!)
 | `CameraSystem` | Kamerasystem | `"Leica ADS100"`, `"Leica DMC-4"` |
 | `TerrainModel` | Verwendetes Geländemodell | `"Digital Surface Model (DSM photogrammetric autocorrelation)"` |
 
-> **Hinweis:** Bei GDS `SB_DSM` wird NoData automatisch gesetzt (`255 255 255` für Hillshade, `-3.4028235e+38` für DSM). Bei `SB_DSM_PUNKTWOLKE` gibt es kein NoData-Value.
+> **Hinweis:** Bei GDS `SB_DSM` wird NoData automatisch gesetzt (`255 255 255` für Hillshade, `-9999` für DSM). Bei `SB_DSM_PUNKTWOLKE` gibt es kein NoData-Value.
 
 ---
 
