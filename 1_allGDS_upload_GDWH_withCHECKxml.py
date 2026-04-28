@@ -463,8 +463,8 @@ def create_and_copy_order(out, src, GDS):
 
 # ****************************** Working Part ******************************
 
-Quelle = r"A:\2020\RHONE\DSM\LV95_LN02\ORIGINAL"
-Ziel = r"\\v0t0020a.adr.admin.ch\iprod\gdwh-ingest\BUCKET_INT\RASTER\SB_DSM\2020_RHONE_DSM"
+Quelle = r"A:\20XX\AOI\DSM\LV95_LN02\ORIGINAL"
+Ziel = r"\\v0t0020a.adr.admin.ch\iprod\gdwh-ingest\BUCKET_INT\RASTER\SB_DSM\20XX_AOI_DSM"
         # --> für GDS "SB_DSM_PUNKTWOLKE" Settings beim Datenpacket kontrollieren:
             # beim erstellen des Datenpackets in GDWH, nur folgende Attribute Wählen, Rest leerlassen. 
                 #(Wählen: "Name", "LayerRealeaseKey", "ReleaseModelKey") (leer: "ReleaseKey" und "FullExportFileNameKey")
@@ -486,7 +486,7 @@ meta_info = {
         # "Digital Surface Model  - Raster Mosaic (DSM photogrammetric autocorrelation)" 
         # "Digital Surface Model - PointCloud LAZ (DSM photogrammetric autocorrelation)"
         # "Digital OrthoPhoto - Mosaic RGB 8BIT"
-    "Line_ID": ["20200913_1054_12501"], 
+    "Line_ID": ["20200913_1054_12501", "20200913_1104_12501"], 
         # kontrollieren;
         # (!)Alle LineIDs(!) des Mosaiks angeben! 
         # erste LineID (!)muss(!) die erste BefliegungsLinie (AufnahmeZeitpunkt) des AOIs sein! 
