@@ -368,9 +368,8 @@ meta_info = {
         # erste LineID (!)muss(!) die erste BefliegungsLinie (AufnahmeZeitpunkt) des AOIs sein!
         # (z.B.: "20200821_0952_12504", "20200821_1009_12504", "20200821_1026_12504")
     "NoData": "0 0 0 0",
-        # kontrollieren! Typische Werte:
-        # "0 0 0"       (3-Band RGB TIF)
-        # "0 0 0 0"     (4-Band TIF, typisch für SB_DOP_16 NRGB)
+        # kontrollieren! Typische Werte (bei 16BIT, 4-Band TIF):
+        # "0 0 0 0" (schwarze Background-Pixel) / "65535 65535 65535 65535" (weisse Background-Pixel)!
     "CustomAttribute": "Digital OrthoPhoto - (ADS Line) NRGB 16BIT",
         # kontrollieren; "Digital OrthoPhoto - (ADS Line) NRGB 16BIT"
     "SourceReferenceSystem": "(EPSG:2056) CH1903+ / LV95_LN02",
