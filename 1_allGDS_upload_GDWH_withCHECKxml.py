@@ -225,7 +225,7 @@ def get_nodata_value(filename, GDS, meta_info):
             return "-3.4028235e+38"
     return meta_info.get("NoData", "")
 
-# ****************************** Sicherheits-Check ******************************
+# ****************************** Sicherheits-Checker ******************************
 def preview_xml_attributes(src, GDS, meta_info):
     """
     Zeigt eine Vorschau der XML-Attribute an (nur Anzeige, keine Datei-Erstellung).
