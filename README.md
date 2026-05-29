@@ -135,7 +135,7 @@ logs\GDWH_{GDS}_{YYYYMMDD_HHMMSS}.log
 Der Ordner wird beim ersten Import automatisch erstellt.
 Die Sub-Scripts schreiben zusätzlich in den zentralen Netzwerk-Log:
 ```
-\\...adr.admin.ch\...\GDWH_STAC_imports\upload_GDWH\scrip_logs\
+...\GDWH_STAC_imports\upload_GDWH\scrip_logs\
 ```
 
 ---
