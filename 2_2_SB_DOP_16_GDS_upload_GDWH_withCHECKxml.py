@@ -11,7 +11,7 @@ import sys
 
 gdal.UseExceptions()
 
-# ****************************** Log-Funktion ******************************
+# ****************************** Log-Functions ******************************
 
 LOG_DIR = r"\\v0t0020a.adr.admin.ch\prod\topo\tbk\tbkn\BAFUprod\GDWH_STAC_imports\upload_GDWH\scrip_logs"
 # os.makedirs wird erst in files_in_order() aufgerufen –

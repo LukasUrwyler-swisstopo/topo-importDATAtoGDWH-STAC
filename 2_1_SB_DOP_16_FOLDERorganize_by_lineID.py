@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 # ============================================================
-#  KONFIGURATION – hier den Inputordner anpassen
+#  KONFIGURATION – hier den Inputordner anpassen, immer prüfen
 # ============================================================
 INPUT_FOLDER = r"A:\2025\BIRCH\DOP\LV95\DOP_NRGB_16BITS"   # <-- anpassen
 # ============================================================

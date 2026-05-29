@@ -313,7 +313,7 @@ class LineIDWidget(ttk.LabelFrame):
 
 
 
-# ─── Sicherheitscheck-Dialog ──────────────────────────────────────────────────
+# ─── Sicherheitscheck-Dialogue ──────────────────────────────────────────────────
 class SicherheitsCheckDialog(tk.Toplevel):
     """Modaler Sicherheitscheck-Dialog vor dem GDWH-Import."""
 
