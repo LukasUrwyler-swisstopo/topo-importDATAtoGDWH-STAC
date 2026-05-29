@@ -146,6 +146,22 @@ def _save_osgeo_config(path):
 
 
 # ─── Hilfsfunktionen ──────────────────────────────────────────────────────────
+def _detect_python_home(python_exe):
+    """Leitet PYTHONHOME vom Python-Executable ab (QGIS: apps\\PythonXXX, OSGeo4W: root)."""
+    bin_dir  = os.path.dirname(python_exe)
+    root_dir = os.path.dirname(bin_dir)
+    apps_dir = os.path.join(root_dir, "apps")
+    if os.path.isdir(apps_dir):
+        for entry in sorted(os.listdir(apps_dir)):
+            if entry.lower().startswith("python"):
+                candidate = os.path.join(apps_dir, entry)
+                if os.path.isdir(os.path.join(candidate, "Lib")):
+                    return candidate
+    if os.path.isdir(os.path.join(root_dir, "Lib")):
+        return root_dir
+    return root_dir
+
+
 def _lade_modul(name, pfad):
     if not os.path.isfile(pfad):
         raise FileNotFoundError(f"Sub-Script nicht gefunden:\n  {pfad}")
@@ -323,7 +339,7 @@ def _pruefe_crs_quelle(gds, quelle):
                 return "ok", f"LV95 erkannt (via CRS-Name)  [{bname}]"
             return "warn", f"CRS unklar: {crs_name[:50]} – manuell prüfen"
         except ImportError:
-            return "warn", f"laspy nicht installiert – manuell prüfen  [{bname}]"
+            return "skip", f"laspy nicht verfügbar – CRS-Prüfung übersprungen  [{bname}]"
         except Exception as e:
             return "warn", f"CRS-Prüfung fehlgeschlagen – manuell prüfen  ({e})"
 
@@ -461,7 +477,7 @@ class SicherheitsCheckDialog(tk.Toplevel):
         if crs_status != "skip":
             tk.Label(crs_box,
                      text="Erwartet: CH1903+ / LV95_LN02  "
-                          "(EPSG:2056 horizontal + LHN95 Höhenreferenz)",
+                          "(EPSG:2056 horizontal + LN02 vertikal)",
                      font=("Segoe UI", 8), bg=bg_c, fg=fg_c,
                      anchor="w").pack(anchor="w", pady=(4, 0))
 
@@ -1185,6 +1201,8 @@ class GDWHApp(tk.Tk):
         try:
             json.dump(cfg, tmp, ensure_ascii=False, indent=2)
             tmp.close()
+            env = os.environ.copy()
+            env["PYTHONHOME"] = _detect_python_home(self._osgeo_python)
             print(f"[Subprocess] {self._osgeo_python}\n", flush=True)
             proc = subprocess.Popen(
                 [self._osgeo_python, RUNNER_SCRIPT, tmp.name],
@@ -1193,6 +1211,7 @@ class GDWHApp(tk.Tk):
                 universal_newlines=True,
                 encoding="utf-8",
                 errors="replace",
+                env=env,
             )
             for line in proc.stdout:
                 print(line, end="", flush=True)
