@@ -27,7 +27,7 @@ GDS_ITEMS = [
     ("SB_DSM_PUNKTWOLKE", "DSM Punktwolke (LAZ), LV95_LN02"),
 ]
 
-# CustomAttribute ist fix je GDS – kein Dropdown nötig
+# CustomAttribute wird automatisch je GDS gesetzt – kein Dropdown nötig
 GDS_CUSTOM_ATTR = {
     "SB_DOP":            "Digital OrthoPhoto - Mosaic RGB 8BIT",
     "SB_DOP_16":         "Digital OrthoPhoto - (ADS Line) NRGB 16BIT",
@@ -68,6 +68,7 @@ LIGHT = {
     "sel_fg":    "#ffffff",
     "ok":        "#2e7d32",
     "err":       "#c62828",
+    "hint":      "#8a6f2e",   # Gedämpftes Amber für Info-Hinweise
 }
 
 DARK = {
@@ -89,6 +90,7 @@ DARK = {
     "sel_fg":    "#cccccc",
     "ok":        "#66bb6a",
     "err":       "#ef5350",
+    "hint":      "#c9a84c",   # Gedämpftes Amber für Info-Hinweise
 }
 
 # ─── OSGeo4W Python Erkennung ─────────────────────────────────────────────────
@@ -186,6 +188,7 @@ class _QueueWriter(io.TextIOBase):
 class LineIDWidget(ttk.LabelFrame):
     def __init__(self, parent, label, **kw):
         super().__init__(parent, text=label, padding=6, **kw)
+        self._max_ids = None  # None = unbegrenzt
         self._build()
 
     def _build(self):
@@ -214,8 +217,25 @@ class LineIDWidget(ttk.LabelFrame):
         ttk.Button(self, text="Ausgewählte entfernen", command=self._remove
                     ).pack(anchor="e", pady=(3, 0))
 
+    def set_max_ids(self, n):
+        """Setzt Limit auf n IDs (None = unbegrenzt). Entfernt überzählige Einträge."""
+        self._max_ids = n
+        if n == 1:
+            self._fmt_lbl.config(
+                text=" Format: YYYYMMDD_HHMM_QQQQQ  |  SB_DOP_16: genau 1 Line_ID")
+        else:
+            self._fmt_lbl.config(
+                text=" Format: YYYYMMDD_HHMM_QQQQQ  |  Mehrere IDs: aus Excel einfügen (Ctrl+V)")
+        if n is not None:
+            while self.lb.size() > n:
+                self.lb.delete(self.lb.size() - 1)
+
     def _add_one(self, val):
         """Fügt eine einzelne validierte LineID zur Liste hinzu. Gibt True zurück bei Erfolg."""
+        if self._max_ids is not None and self.lb.size() >= self._max_ids:
+            messagebox.showwarning("Limit erreicht",
+                f"Für SB_DOP_16 darf nur genau 1 Line_ID angegeben werden.", parent=self)
+            return False
         if not LINE_ID_PAT.match(val):
             messagebox.showwarning("Ungültiges Format",
                 f"Erwartet: YYYYMMDD_HHMM_QQQQQ\nBeispiel:  20200821_0952_12504\n\nEingabe: {val}",
@@ -244,6 +264,14 @@ class LineIDWidget(ttk.LabelFrame):
             return  # Einzelne Zeile → normales Paste-Verhalten
         # Mehrere Zeilen: Entry leeren und bulk verarbeiten
         self.var.set("")
+        # Limit berücksichtigen
+        if self._max_ids is not None:
+            available = self._max_ids - self.lb.size()
+            if available <= 0:
+                messagebox.showwarning("Limit erreicht",
+                    "Für SB_DOP_16 darf nur genau 1 Line_ID angegeben werden.", parent=self)
+                return "break"
+            lines = lines[:available]
         added, skipped = [], []
         existing = set(self.lb.get(0, "end"))
         for line in lines:
@@ -483,6 +511,7 @@ class GDWHApp(tk.Tk):
         self.gds_var        = tk.StringVar(value="SB_DOP")
         self._dim_labels    = []   # Labels mit fg_dim (grau)
         self._accent_labels = []   # Labels mit accent (blau)
+        self._hint_labels   = []   # Labels mit hint (amber) für Info-Hinweise
         self._osgeo_python  = _detect_osgeo_python()
         self._osgeo_lbl     = None
         self._osgeo_status  = None
@@ -600,7 +629,7 @@ class GDWHApp(tk.Tk):
                       ).grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
         r += 1
 
-        # CustomAttribute – fix per GDS, kein Dropdown
+        # CustomAttribute – automatisch per GDS, kein Dropdown
         ttk.Label(sec, text="CustomAttribute:").grid(row=r, column=0, sticky="nw", pady=3)
         ca_row = ttk.Frame(sec)
         ca_row.grid(row=r, column=1, sticky="ew", padx=(8, 0), pady=3)
@@ -608,7 +637,7 @@ class GDWHApp(tk.Tk):
         self._custom_lbl = ttk.Label(ca_row, textvariable=self.custom_var,
                                       font=("", 9, "italic"), wraplength=560, justify="left")
         self._custom_lbl.pack(side="left", anchor="w")
-        ca_fix = ttk.Label(ca_row, text="  [fix – wird automatisch gesetzt]", font=("", 8))
+        ca_fix = ttk.Label(ca_row, text="  [wird automatisch gesetzt]", font=("", 8))
         ca_fix.pack(side="left")
         self._accent_labels.append(self._custom_lbl)
         self._dim_labels.append(ca_fix)
@@ -618,14 +647,14 @@ class GDWHApp(tk.Tk):
         self.lineid_w = LineIDWidget(sec, "Line_ID")
         self.lineid_w.grid(row=r, column=0, columnspan=2, sticky="ew", pady=4)
         self.lineid_hint = ttk.Label(sec, font=("", 8),
-            text="ℹ  SB_DOP_16: hier nur die LineID(s) des aktuell zu importierenden Ordners")
+            text="ℹ  SB_DOP_16: genau 1 Line_ID – wird als Unterordner-Name der Quelle verwendet")
         self.lineid_hint.grid(row=r+1, column=0, columnspan=2, sticky="w")
-        self._accent_labels.append(self.lineid_hint)
+        self._hint_labels.append(self.lineid_hint)
         r += 2
 
         # allAreaLineIDs (nur SB_DOP_16)
         self.all_area_w = LineIDWidget(sec,
-            "allAreaLineIDs  (ALLE Linien des Gesamtgebiets – für AcquisitionTimes)")
+            "allAreaLineIDs  (alle Fluglinien Line_IDs des AOIs – mindestens eine Line_ID nötig)")
         self.all_area_w.grid(row=r, column=0, columnspan=2, sticky="ew", pady=4)
         r += 1
 
@@ -649,13 +678,13 @@ class GDWHApp(tk.Tk):
                       ).grid(row=r, column=1, sticky="ew", padx=(8, 0), pady=3)
         r += 1
 
-        # SourceReferenceSystem (fix)
+        # SourceReferenceSystem (unveränderlich)
         ttk.Label(sec, text="SourceRefSys:").grid(row=r, column=0, sticky="w", pady=3)
         srs_row = ttk.Frame(sec)
         srs_row.grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
         srs_val = ttk.Label(srs_row, text=SOURCE_REF_SYS, font=("", 9, "bold"))
         srs_val.pack(side="left")
-        srs_fix = ttk.Label(srs_row, text="  [fix – kein anderer Wert möglich]", font=("", 8))
+        srs_fix = ttk.Label(srs_row, text="  [kein anderer Wert möglich]", font=("", 8))
         srs_fix.pack(side="left")
         self._accent_labels.append(srs_val)
         self._dim_labels.append(srs_fix)
@@ -674,42 +703,38 @@ class GDWHApp(tk.Tk):
         sec.columnconfigure(1, weight=1)
         r = 0
 
-        # INPUT_FOLDER (nur SB_DOP_16)
+        # INPUT_FOLDER (nur SB_DOP_16) – Data-Input Path wird automatisch abgeleitet
         self.if_frame = ttk.Frame(sec)
         self.if_frame.grid(row=r, column=0, columnspan=3, sticky="ew")
-        self.skip21_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.if_frame,
-                         text="Unterordner bereits erstellt – Script 2_1 überspringen",
-                         variable=self.skip21_var, command=self._on_skip21
-                         ).pack(anchor="w")
-        self.if_sub = ttk.Frame(self.if_frame)
-        self.if_sub.pack(fill="x", pady=(3, 0))
-        self.if_sub.columnconfigure(1, weight=1)
-        ttk.Label(self.if_sub, text="INPUT_FOLDER\n(Hauptordner mit\nallen DOP-TIFs):",
-                   justify="left").grid(row=0, column=0, sticky="w")
+        self.if_frame.columnconfigure(1, weight=1)
+        ttk.Label(self.if_frame, text="INPUT_FOLDER\n(DOP_NRGB_16BITS\nHauptordner):",
+                   justify="left").grid(row=0, column=0, sticky="w", pady=3)
         self.if_var = tk.StringVar()
-        ttk.Entry(self.if_sub, textvariable=self.if_var
-                   ).grid(row=0, column=1, sticky="ew", padx=(8, 4))
-        ttk.Button(self.if_sub, text="Ordner…",
+        ttk.Entry(self.if_frame, textvariable=self.if_var
+                   ).grid(row=0, column=1, sticky="ew", padx=(8, 4), pady=3)
+        ttk.Button(self.if_frame, text="Ordner…",
                     command=lambda: self._browse(self.if_var)
-                    ).grid(row=0, column=2)
+                    ).grid(row=0, column=2, pady=3)
+        self.if_hint = ttk.Label(self.if_frame, font=("", 8),
+            text="Data-Input Path wird automatisch ergänzt:  INPUT_FOLDER\\<HHMM der Line_ID>")
+        self.if_hint.grid(row=1, column=1, sticky="w", padx=(8, 0))
+        self._dim_labels.append(self.if_hint)
 
-        ttk.Separator(sec, orient="horizontal").grid(
-            row=r+1, column=0, columnspan=3, sticky="ew", pady=6)
-        r += 2
-
-        # Quelle
-        ttk.Label(sec, text="Data-Input Path:").grid(row=r, column=0, sticky="w", pady=3)
+        # Data-Input Path (für alle GDS ausser SB_DOP_16)
+        self.quelle_frame = ttk.Frame(sec)
+        self.quelle_frame.grid(row=r, column=0, columnspan=3, sticky="ew")
+        self.quelle_frame.columnconfigure(1, weight=1)
+        ttk.Label(self.quelle_frame, text="Data-Input Path:").grid(row=0, column=0, sticky="w", pady=3)
         self.quelle_var = tk.StringVar()
-        ttk.Entry(sec, textvariable=self.quelle_var
-                   ).grid(row=r, column=1, sticky="ew", padx=(8, 4), pady=3)
-        ttk.Button(sec, text="Ordner…",
+        ttk.Entry(self.quelle_frame, textvariable=self.quelle_var
+                   ).grid(row=0, column=1, sticky="ew", padx=(8, 4), pady=3)
+        ttk.Button(self.quelle_frame, text="Ordner…",
                     command=lambda: self._browse(self.quelle_var)
-                    ).grid(row=r, column=2, pady=3)
-        self.quelle_hint = ttk.Label(sec, font=("", 8))
-        self.quelle_hint.grid(row=r+1, column=1, sticky="w", padx=(8, 0))
+                    ).grid(row=0, column=2, pady=3)
+        self.quelle_hint = ttk.Label(self.quelle_frame, font=("", 8))
+        self.quelle_hint.grid(row=1, column=1, sticky="w", padx=(8, 0))
         self._dim_labels.append(self.quelle_hint)
-        r += 2
+        r += 1
 
         # Ziel
         ttk.Label(sec, text="GDWH-BUCKET Path,\n(GDWH-Datapackage):").grid(row=r, column=0, sticky="w", pady=3)
@@ -849,6 +874,9 @@ class GDWHApp(tk.Tk):
         for lbl in self._accent_labels:
             try: lbl.configure(foreground=T["accent"])
             except tk.TclError: pass
+        for lbl in self._hint_labels:
+            try: lbl.configure(foreground=T["hint"])
+            except tk.TclError: pass
 
         self._set_titlebar_dark(dark)
 
@@ -885,11 +913,12 @@ class GDWHApp(tk.Tk):
         # CustomAttribute – fix per GDS
         self.custom_var.set(GDS_CUSTOM_ATTR[gds])
 
-        # Line_ID Label + Hinweis
+        # Line_ID Label + Limit + Hinweis
         self.lineid_w.config(
-            text=("Line_ID  (nur zu importierende Linie(n) dieses Ordners)"
+            text=("Line_ID  (die Line_ID der DOP NRGB 16BIT-Fluglinie – nur eine Line_ID möglich)"
                   if is_d16 else "Line_ID  (alle LineIDs des Mosaiks/Gebiets)")
         )
+        self.lineid_w.set_max_ids(1 if is_d16 else None)
         self.lineid_hint.grid() if is_d16 else self.lineid_hint.grid_remove()
         self.all_area_w.grid()  if is_d16 else self.all_area_w.grid_remove()
 
@@ -916,11 +945,10 @@ class GDWHApp(tk.Tk):
                 self.nodata_var.set(opts[0])
             self.nodata_cb.grid()
 
-        # INPUT_FOLDER + Quelle-Hinweis
-        self.if_frame.grid()   if is_d16 else self.if_frame.grid_remove()
-        self.quelle_hint.config(
-            text=("Spezifischer LineID-Unterordner  (z.B. …\\DOP_NRGB_16BITS\\1005)"
-                  if is_d16 else "Ordner mit TIF- / LAZ-Quelldateien"))
+        # INPUT_FOLDER (SB_DOP_16) vs. Data-Input Path (andere GDS)
+        self.if_frame.grid()         if is_d16 else self.if_frame.grid_remove()
+        self.quelle_frame.grid_remove() if is_d16 else self.quelle_frame.grid()
+        self.quelle_hint.config(text="Ordner mit TIF- / LAZ-Quelldateien")
 
         # Theme für die neu sichtbaren Widgets aktualisieren
         if hasattr(self, "_dark"):
@@ -931,12 +959,9 @@ class GDWHApp(tk.Tk):
             for lbl in self._accent_labels:
                 try: lbl.configure(foreground=T["accent"])
                 except tk.TclError: pass
-
-    def _on_skip21(self):
-        if self.skip21_var.get():
-            self.if_sub.pack_forget()
-        else:
-            self.if_sub.pack(fill="x", pady=(3, 0))
+            for lbl in self._hint_labels:
+                try: lbl.configure(foreground=T["hint"])
+                except tk.TclError: pass
 
     # ── Ordner-Dialog ─────────────────────────────────────────────────────────
     def _browse(self, var, must_exist=True):
@@ -962,17 +987,17 @@ class GDWHApp(tk.Tk):
         if gds == "SB_DOP_16":
             if not self.all_area_w.get_ids():
                 errors.append("Mindestens eine allAreaLineID ist erforderlich.")
-            if not self.skip21_var.get() and not self.if_var.get().strip():
-                errors.append("INPUT_FOLDER für Script 2_1 fehlt.")
-            if not self.skip21_var.get() and self.if_var.get().strip() \
-               and not os.path.isdir(self.if_var.get()):
-                errors.append(f"INPUT_FOLDER nicht gefunden:\n  {self.if_var.get()}")
-
-        q = self.quelle_var.get().strip().strip('"')
-        if not q:
-            errors.append("Quelle fehlt.")
-        elif not os.path.isdir(q):
-            errors.append(f"Quelle nicht gefunden oder nicht erreichbar:\n  {q}")
+            if_path = self.if_var.get().strip().strip('"')
+            if not if_path:
+                errors.append("INPUT_FOLDER fehlt.")
+            elif not os.path.isdir(if_path):
+                errors.append(f"INPUT_FOLDER nicht gefunden:\n  {if_path}")
+        else:
+            q = self.quelle_var.get().strip().strip('"')
+            if not q:
+                errors.append("Quelle fehlt.")
+            elif not os.path.isdir(q):
+                errors.append(f"Quelle nicht gefunden oder nicht erreichbar:\n  {q}")
 
         if not self.ziel_var.get().strip():
             errors.append("Ziel fehlt.")
@@ -1071,12 +1096,17 @@ class GDWHApp(tk.Tk):
         if not self._validate():
             return
 
-        gds    = self.gds_var.get()
-        meta   = self._build_meta_info()
-        quelle = self.quelle_var.get().strip().strip('"')
-        ziel   = self.ziel_var.get().strip().strip('"')
-        skip21 = self.skip21_var.get()
-        input_folder = self.if_var.get().strip().strip('"')
+        gds  = self.gds_var.get()
+        meta = self._build_meta_info()
+        ziel = self.ziel_var.get().strip().strip('"')
+
+        # SB_DOP_16: quelle = INPUT_FOLDER; effektive Quelle = INPUT_FOLDER\HHMM
+        if gds == "SB_DOP_16":
+            quelle         = self.if_var.get().strip().strip('"')
+            quelle_display = os.path.join(quelle, meta["Line_ID"][0][9:13])
+        else:
+            quelle         = self.quelle_var.get().strip().strip('"')
+            quelle_display = quelle
 
         # Zielpfad-Warnung
         norm  = ziel.replace("/", "\\")
@@ -1090,7 +1120,7 @@ class GDWHApp(tk.Tk):
 
         # Sicherheitscheck
         dlg = SicherheitsCheckDialog(
-            self, gds, meta, quelle, ziel, dark=self._dark,
+            self, gds, meta, quelle_display, ziel, dark=self._dark,
         )
         if not dlg.wait():
             return
@@ -1115,12 +1145,12 @@ class GDWHApp(tk.Tk):
 
         threading.Thread(
             target=self._run_thread,
-            args=(gds, meta, quelle, ziel, skip21, input_folder),
+            args=(gds, meta, quelle, ziel),
             daemon=True
         ).start()
 
     # ── Import-Thread ─────────────────────────────────────────────────────────
-    def _run_thread(self, gds, meta, quelle, ziel, skip21, input_folder):
+    def _run_thread(self, gds, meta, quelle, ziel):
         old_stdout = sys.stdout
         orig_input = builtins.input
         sys.stdout    = _QueueWriter(self._log_q)
@@ -1128,7 +1158,7 @@ class GDWHApp(tk.Tk):
 
         try:
             if gds == "SB_DOP_16":
-                self._exec_dop16(gds, meta, quelle, ziel, skip21, input_folder)
+                self._exec_dop16(gds, meta, quelle, ziel)
             else:
                 self._exec_standard(gds, meta, quelle, ziel)
             self._log_q.put(("done", True))
@@ -1190,30 +1220,33 @@ class GDWHApp(tk.Tk):
     def _exec_standard(self, gds, meta, quelle, ziel):
         self._exec_with_osgeo("standard", gds, meta, quelle, ziel)
 
-    def _exec_dop16(self, gds, meta, quelle, ziel, skip21, input_folder):
-        if not skip21:
-            print("Script 2_1 wird geladen…\n")
-            m21 = _lade_modul("script_21", SCRIPT_21)
-            print(">>> .pyr und .xml Dateien löschen <<<\n")
-            m21.delete_unwanted_files(input_folder)
-            print("\n>>> VORSCHAU – keine Dateien werden verschoben <<<\n")
-            m21.organize_files(input_folder, dry_run=True)
-            print("\n>>> Dateien werden verschoben… <<<\n")
-            m21.organize_files(input_folder, dry_run=False)
-            try:
-                subs = sorted(d for d in os.listdir(input_folder)
-                               if os.path.isdir(os.path.join(input_folder, d)))
-                if subs:
-                    print(f"\nErstellte Unterordner in:\n  {input_folder}")
-                    for s in subs:
-                        print(f"  → {s}")
-            except Exception:
-                pass
-        else:
-            print("[Script 2_1 übersprungen]\n")
+    def _exec_dop16(self, gds, meta, input_folder, ziel):
+        # Script 2_1: Ordner organisieren (erkennt bereits vorhandene Struktur automatisch)
+        print("Script 2_1 wird geladen…\n")
+        m21 = _lade_modul("script_21", SCRIPT_21)
+        print(">>> .pyr und .xml Dateien löschen <<<\n")
+        m21.delete_unwanted_files(input_folder)
+        print("\n>>> VORSCHAU – keine Dateien werden verschoben <<<\n")
+        m21.organize_files(input_folder, dry_run=True)
+        print("\n>>> Dateien werden verschoben… <<<\n")
+        m21.organize_files(input_folder, dry_run=False)
+        try:
+            subs = sorted(d for d in os.listdir(input_folder)
+                           if os.path.isdir(os.path.join(input_folder, d)))
+            if subs:
+                print(f"\nUnterordner in:\n  {input_folder}")
+                for s in subs:
+                    print(f"  → {s}")
+        except Exception:
+            pass
+
+        # Data-Input Path: INPUT_FOLDER + HHMM-Teil der Line_ID (= BandID)
+        band_id          = meta["Line_ID"][0][9:13]
+        effective_quelle = os.path.join(input_folder, band_id)
+        print(f"\n[SB_DOP_16] Data-Input Path: {effective_quelle}\n")
 
         print("\nScript 2_2 wird via OSGeo4W Python gestartet…\n")
-        self._exec_with_osgeo("dop16", gds, meta, quelle, ziel)
+        self._exec_with_osgeo("dop16", gds, meta, effective_quelle, ziel)
 
 
 # ─── Start ────────────────────────────────────────────────────────────────────

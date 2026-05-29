@@ -12,9 +12,6 @@ import sys
 
 # ****************************** Log-Funktion ******************************
 LOG_DIR = r"\\v0t0020a.adr.admin.ch\prod\topo\tbk\tbkn\BAFUprod\GDWH_STAC_imports\upload_GDWH\scrip_logs"
-# FIX: os.makedirs wird jetzt erst in files_in_order() aufgerufen –
-#      nicht mehr auf Modul-Ebene, damit ein nicht-erreichbarer UNC-Pfad
-#      nicht sofort beim Scriptstart abbricht (noch vor dem Sicherheits-Check).
 log_file = None
 
 def log(message):
@@ -26,7 +23,6 @@ def log(message):
 def calculate_md5(file_path):
     h = hashlib.md5()
     with open(file_path, "rb") as f:
-        # FIX/OPT: 64 KB statt 4 KB pro Chunk → ~16× weniger Systemcalls bei grossen TIF/LAZ
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -50,7 +46,6 @@ def parse_line_id_to_hundredths(line_id):
     """
     try:
         parts = line_id.split("_")
-        # FIX: Explizite Prüfung statt blindem IndexError bei fehlendem '_'
         if len(parts) < 2:
             log(f"Ungültiges Line_ID Format (mind. ein '_' erwartet): '{line_id}'")
             return None
@@ -138,12 +133,9 @@ def wkt_footprint(full_file_path):
         urx, ury = gdal.ApplyGeoTransform(gt, cols, 0)
         llx, lly = gdal.ApplyGeoTransform(gt, 0, rows)
         lrx, lry = gdal.ApplyGeoTransform(gt, cols, rows)
-        # FIX: Punkt 2 war '{lrx} {lly}' — Y-Koordinate wurde falsch gemischt.
-        #      Korrekt: '{lrx} {lry}'. Bei achsen-parallelen LV95-Rastern ist
-        #      lly==lry, daher war bisher kein sichtbares Symptom vorhanden.
         return f"POLYGON (({llx} {lly}, {lrx} {lry}, {urx} {ury}, {ulx} {uly}, {llx} {lly}))"
     finally:
-        raster = None  # FIX: GDAL-Handle explizit freigeben (war vorher offen gelassen)
+        raster = None
 
 def get_raster_attributes(file_path):
     raster = gdal.Open(file_path)
@@ -163,7 +155,7 @@ def get_raster_attributes(file_path):
             "CellCountHeight": str(rows)
         }
     finally:
-        raster = None  # FIX: GDAL-Handle explizit freigeben (war vorher offen gelassen)
+        raster = None
 
 def extract_area(filename, GDS):
     """
@@ -211,8 +203,6 @@ def extract_tile_lv95(filename):
     parts = base.split('_')
     try:
         lv95_idx = parts.index('LV95')
-        # FIX: Negativer Index-Zugriff würde silently falsches Ergebnis liefern.
-        #      Explizite Prüfung verhindert das.
         if lv95_idx < 2:
             raise ValueError(f"'LV95' steht an Position {lv95_idx}, mind. 2 Parts davor nötig")
         return parts[lv95_idx - 2] + "_" + parts[lv95_idx - 1]
@@ -265,7 +255,6 @@ def preview_xml_attributes(src, GDS, meta_info):
         _parts = example_file.rsplit('.', 1)[0].split('_')
         if "LV95" in _parts:
             _idx = _parts.index("LV95")
-            # FIX: gleicher Index-Guard wie in extract_tile_lv95 und update_file_csv
             if _idx >= 2:
                 example_tilekey = _parts[_idx - 2] + "_" + _parts[_idx - 1]
             else:
@@ -278,7 +267,6 @@ def preview_xml_attributes(src, GDS, meta_info):
         _parts = example_file.rsplit('.', 1)[0].split('_')
         example_tilekey = _parts[-2] + "_" + _parts[-1] if len(_parts) >= 2 else "UNBEKANNT"
 
-    # FIX: Funktions-Parameter 'src' verwenden statt globale Variable 'Quelle'
     print("CHECK-ref.SYS.; ReferenzSystem OK?: ", src)
     print(meta_info.get("Auftragstyp", ""))
     print(AOI)
@@ -433,7 +421,6 @@ def update_file_csv(output_path, full_file_path, GDS):
         # TileKey: die zwei Parts direkt vor '_LV95' (robust, von hinten)
         if "LV95" in name_parts:
             lv95_index = name_parts.index("LV95")
-            # FIX: Negativer Index-Zugriff würde silently falsches Ergebnis liefern
             if lv95_index < 2:
                 raise ValueError(f"'LV95' steht zu früh im Dateinamen (Position {lv95_index}): {name}")
             tile = name_parts[lv95_index - 2] + "_" + name_parts[lv95_index - 1]
@@ -462,8 +449,6 @@ def files_in_order(src, out, GDS, meta):
     global log_file
     missing_xml = []
 
-    # FIX: os.makedirs hier statt auf Modul-Ebene → UNC-Pfad wird erst beim
-    #      tatsächlichen Start geprüft, nicht schon beim Import/Scriptstart
     os.makedirs(LOG_DIR, exist_ok=True)
 
     log_name = os.path.basename(out.rstrip("/\\")) + ".log"
@@ -572,7 +557,6 @@ if __name__ == "__main__":
 
     # ======================================================================
 
-    # FIX: Pfad-Validierung vor Start → klare Fehlermeldung statt kryptischem Crash
     if not os.path.isdir(Quelle):
         sys.exit(f"\nFEHLER: Quellordner nicht gefunden:\n  {Quelle}\n")
 
@@ -580,10 +564,6 @@ if __name__ == "__main__":
     preview_xml_attributes(Quelle, GDS, meta_info)
 
     # Processierung wenn YES
-    # FIX: try/finally auf Script-Ebene → Log-Datei wird garantiert geschlossen,
-    #      auch wenn sys.exit() oder eine unerwartete Exception auftritt.
-    #      create_and_copy_order läuft innerhalb des try-Blocks, damit sein
-    #      "DOP-Dateien kopiert"-Log ebenfalls in die Datei geschrieben wird.
     try:
         files_in_order(Quelle, Ziel, GDS, meta_info)
         create_and_copy_order(Ziel, Quelle, GDS)
