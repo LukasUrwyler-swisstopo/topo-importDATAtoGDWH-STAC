@@ -284,91 +284,6 @@ class LineIDWidget(ttk.LabelFrame):
         self._fmt_lbl.config(foreground=T["fg_dim"])
 
 
-# ─── CRS-Prüfung Quelle ───────────────────────────────────────────────────────
-def _pruefe_crs_quelle(gds, quelle):
-    """Versucht das CRS des ersten Quell-Files zu lesen.
-    Gibt (status, meldung) zurück:  status = 'ok' | 'warn' | 'err' | 'skip'
-    """
-    if gds in ("SB_DOP", "SB_DOP_16"):
-        return "skip", "LV95 (kein Höhenref.) – wird nicht geprüft"
-
-    ext = ".laz" if gds == "SB_DSM_PUNKTWOLKE" else ".tif"
-    sample = None
-    try:
-        for entry in os.scandir(quelle):
-            if entry.name.lower().endswith(ext):
-                sample = entry.path
-                break
-    except Exception:
-        pass
-    if sample is None:
-        try:
-            for root, _, files in os.walk(quelle):
-                for fname in files:
-                    if fname.lower().endswith(ext):
-                        sample = os.path.join(root, fname)
-                        break
-                if sample:
-                    break
-        except Exception:
-            pass
-
-    if not sample:
-        return "warn", f"Kein {ext[1:].upper()}-File in Quelle gefunden – manuell prüfen"
-
-    bname = os.path.basename(sample)
-
-    if gds == "SB_DSM_PUNKTWOLKE":
-        try:
-            import laspy  # type: ignore[import]
-            with laspy.open(sample) as reader:
-                crs = reader.header.parse_crs() if hasattr(reader.header, "parse_crs") else None
-            if crs is None:
-                return "warn", f"CRS nicht lesbar ({bname}) – manuell prüfen"
-            try:
-                auth = crs.to_authority()
-                epsg = auth[1] if auth else None
-            except Exception:
-                epsg = None
-            if epsg == "2056":
-                return "ok", f"EPSG:2056 (LV95) erkannt  [{bname}]"
-            elif epsg:
-                return "err", f"EPSG:{epsg} gefunden – erwartet EPSG:2056!  [{bname}]"
-            crs_name = str(crs)
-            if "2056" in crs_name or "LV95" in crs_name.upper():
-                return "ok", f"LV95 erkannt (via CRS-Name)  [{bname}]"
-            return "warn", f"CRS unklar: {crs_name[:50]} – manuell prüfen"
-        except ImportError:
-            return "skip", f"laspy nicht verfügbar – CRS-Prüfung übersprungen  [{bname}]"
-        except Exception as e:
-            return "warn", f"CRS-Prüfung fehlgeschlagen – manuell prüfen  ({e})"
-
-    else:  # SB_DSM – GeoTIFF
-        try:
-            from osgeo import gdal, osr  # type: ignore[import]
-            gdal.UseExceptions()
-            ds = gdal.Open(sample)
-            if ds is None:
-                return "warn", f"Datei nicht lesbar: {bname}"
-            wkt = ds.GetProjection()
-            ds = None
-            if not wkt:
-                return "warn", f"Kein CRS in Datei ({bname}) – manuell prüfen"
-            srs = osr.SpatialReference()
-            srs.ImportFromWkt(wkt)
-            epsg = srs.GetAuthorityCode(None)
-            if epsg == "2056":
-                return "ok", f"EPSG:2056 (LV95) erkannt  [{bname}]"
-            elif epsg:
-                return "err", f"EPSG:{epsg} gefunden – erwartet EPSG:2056!  [{bname}]"
-            if "2056" in wkt or "LV95" in wkt.upper():
-                return "ok", f"LV95 erkannt (via WKT)  [{bname}]"
-            return "warn", f"CRS unklar: {srs.GetName() or '?'} – manuell prüfen"
-        except ImportError:
-            return "warn", f"GDAL nicht verfügbar – manuell prüfen  [{bname}]"
-        except Exception as e:
-            return "warn", f"CRS-Prüfung fehlgeschlagen – manuell prüfen  ({e})"
-
 
 # ─── Sicherheitscheck-Dialog ──────────────────────────────────────────────────
 class SicherheitsCheckDialog(tk.Toplevel):
@@ -387,11 +302,14 @@ class SicherheitsCheckDialog(tk.Toplevel):
         "skip": ("#f5f5f5", "#757575"),
     }
 
-    def __init__(self, parent, gds, meta, quelle, ziel, crs_status, crs_text, dark=True):
+    def __init__(self, parent, gds, meta, quelle, ziel, dark=True):
         super().__init__(parent)
         self.result = False
+        self._dark = dark
         T   = DARK if dark else LIGHT
         box = self._BOX_DARK if dark else self._BOX_LIGHT
+        self._T   = T
+        self._box = box
 
         self.title("Sicherheitscheck – Import starten?")
         self.resizable(False, False)
@@ -465,33 +383,46 @@ class SicherheitsCheckDialog(tk.Toplevel):
         _path_block(sec2, "Quelle:", quelle)
         _path_block(sec2, "Ziel:", ziel)
 
-        # CRS-Prüfung
-        sec3 = _section("CRS-PRÜFUNG  QUELLE")
-        bg_c, fg_c = box[crs_status]
-        crs_box = tk.Frame(sec3, bg=bg_c, padx=10, pady=8)
+        # CRS-Bestätigung durch Nutzer
+        sec3 = _section("REFERENZSYSTEM  –  NUTZERBESTÄTIGUNG ERFORDERLICH")
+        bg_c, fg_c = box["warn"]
+        if gds in ("SB_DSM", "SB_DSM_PUNKTWOLKE"):
+            expected_crs = "DSM:  LV95_LN02  (EPSG:2056 horizontal  +  LN02 vertikal)"
+        else:
+            expected_crs = "DOP:  LV95  (EPSG:2056 horizontal)"
+        crs_box = tk.Frame(sec3, bg=bg_c, padx=12, pady=10)
         crs_box.pack(fill="x", pady=(0, 4))
-        icon = {"ok": "✓", "warn": "⚠", "err": "✗", "skip": "—"}[crs_status]
-        tk.Label(crs_box, text=f"{icon}  {crs_text}",
-                 font=("Segoe UI", 9), bg=bg_c, fg=fg_c,
-                 anchor="w", wraplength=560, justify="left").pack(anchor="w")
-        if crs_status != "skip":
-            tk.Label(crs_box,
-                     text="Erwartet: CH1903+ / LV95_LN02  "
-                          "(EPSG:2056 horizontal + LN02 vertikal)",
-                     font=("Segoe UI", 8), bg=bg_c, fg=fg_c,
-                     anchor="w").pack(anchor="w", pady=(4, 0))
+        tk.Label(crs_box,
+                 text="Ist der Inputpfad im korrekten Referenzsystem?",
+                 font=("Segoe UI", 11, "bold"),
+                 bg=bg_c, fg=fg_c, anchor="w").pack(anchor="w")
+        tk.Label(crs_box,
+                 text=f"  {expected_crs}",
+                 font=("Segoe UI", 10),
+                 bg=bg_c, fg=fg_c, anchor="w").pack(anchor="w", pady=(4, 8))
+        self._crs_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(crs_box,
+                       text="  Ja – Referenzsystem ist korrekt",
+                       variable=self._crs_var,
+                       font=("Segoe UI", 10, "bold"),
+                       bg=bg_c, fg=fg_c,
+                       activebackground=bg_c, activeforeground=fg_c,
+                       selectcolor=bg_c,
+                       command=self._on_crs_toggle).pack(anchor="w")
 
         # Trennlinie + Buttons
         tk.Frame(self, height=1, bg=T["sep"]).pack(fill="x", pady=(12, 0))
         btn_row = tk.Frame(self, bg=T["root"])
         btn_row.pack(fill="x", padx=14, pady=10)
 
-        tk.Button(btn_row, text="▶   Import starten",
+        self._import_btn = tk.Button(btn_row, text="▶   Import starten",
                   font=("Segoe UI", 10, "bold"),
-                  bg="#005fa3" if dark else "#0063b1", fg="#ffffff",
+                  bg=T["btn"], fg=T["fg_dim"],
                   activebackground=T["sel_bg"], activeforeground="#ffffff",
                   relief="flat", padx=18, pady=7, cursor="hand2",
-                  command=self._confirm).pack(side="right")
+                  state="disabled",
+                  command=self._confirm)
+        self._import_btn.pack(side="right")
 
         tk.Button(btn_row, text="Abbrechen",
                   font=("Segoe UI", 10),
@@ -514,6 +445,20 @@ class SicherheitsCheckDialog(tk.Toplevel):
         self.result = True
         self.destroy()
 
+    def _on_crs_toggle(self):
+        if self._crs_var.get():
+            self._import_btn.config(
+                state="normal",
+                bg="#005fa3" if self._dark else "#0063b1",
+                fg="#ffffff",
+            )
+        else:
+            self._import_btn.config(
+                state="disabled",
+                bg=self._T["btn"],
+                fg=self._T["fg_dim"],
+            )
+
     def wait(self):
         self.wait_window()
         return self.result
@@ -525,8 +470,10 @@ class GDWHApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("GDWH Import")
-        self.geometry("860x1060")
-        self.minsize(720, 860)
+        screen_h = self.winfo_screenheight()
+        win_h = min(1060, screen_h - 80)
+        self.geometry(f"860x{win_h}")
+        self.minsize(720, min(860, win_h))
         self.resizable(True, True)
 
         self._running       = False
@@ -622,13 +569,21 @@ class GDWHApp(tk.Tk):
             font=("Courier New", 9))
         self.log_box.pack(fill="both", expand=True)
 
+        # Fortschrittsbalken (anfangs unsichtbar – wird bei Import-Start eingeblendet)
+        self._progress_frame = ttk.Frame(self)
+        self._progress_bar = ttk.Progressbar(self._progress_frame, mode="indeterminate")
+        self._progress_bar.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._progress_lbl = ttk.Label(self._progress_frame,
+                                        text="Verarbeitung läuft…", font=("", 9))
+        self._progress_lbl.pack(side="left")
+
         # Buttons
-        btn_row = ttk.Frame(self)
-        btn_row.pack(fill="x", padx=12, pady=(0, 10))
-        self.start_btn = ttk.Button(btn_row, text="▶   IMPORT STARTEN",
+        self._btn_row = ttk.Frame(self)
+        self._btn_row.pack(fill="x", padx=12, pady=(0, 10))
+        self.start_btn = ttk.Button(self._btn_row, text="▶   IMPORT STARTEN",
                                      command=self._start_import)
         self.start_btn.pack(side="right", ipadx=22, ipady=7)
-        ttk.Button(btn_row, text="Log löschen",
+        ttk.Button(self._btn_row, text="Log löschen",
                     command=self._clear_log).pack(side="right", padx=(0, 10))
 
     def _build_meta(self, parent):
@@ -852,6 +807,10 @@ class GDWHApp(tk.Tk):
             bordercolor=T["sep"], arrowcolor=T["fg"],
         )
         s.configure("TSeparator", background=T["sep"])
+        s.configure("TProgressbar",
+            background=T["accent"], troughcolor=T["root"],
+            bordercolor=T["sep"],
+        )
 
         # Combobox-Dropdown Farben
         self.option_add("*TCombobox*Listbox.background",       T["list"])
@@ -1083,6 +1042,8 @@ class GDWHApp(tk.Tk):
     def _on_done(self, success):
         self._running = False
         self.start_btn.config(state="normal")
+        self._progress_bar.stop()
+        self._progress_frame.pack_forget()
         if success:
             self._log("\n✓  Import erfolgreich abgeschlossen.\n")
             messagebox.showinfo("Fertig", "Import erfolgreich abgeschlossen!", parent=self)
@@ -1128,16 +1089,16 @@ class GDWHApp(tk.Tk):
                 return
 
         # Sicherheitscheck
-        crs_status, crs_text = _pruefe_crs_quelle(gds, quelle)
         dlg = SicherheitsCheckDialog(
-            self, gds, meta, quelle, ziel,
-            crs_status, crs_text, dark=self._dark,
+            self, gds, meta, quelle, ziel, dark=self._dark,
         )
         if not dlg.wait():
             return
 
         self._running = True
         self.start_btn.config(state="disabled")
+        self._progress_frame.pack(fill="x", padx=12, pady=(0, 4), before=self._btn_row)
+        self._progress_bar.start(10)
         self._clear_log()
 
         # Logdatei öffnen (logs-Ordner neben diesem Script)
