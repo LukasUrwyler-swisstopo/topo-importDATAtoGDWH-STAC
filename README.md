@@ -11,9 +11,8 @@ Python-Scripts zur automatisierten XML-Generierung, Datenvalidierung und Import-
 ```
 python 0_main_GDWH_import_GUI.py
 ```
-cmd >python "...\0_main_GDWH_import_GUI.py"
 
-(Tkinter-Oberfläche – alle Felder werden interaktiv ausgefüllt, kein manuelles Script-Editieren nötig.)
+Tkinter-Oberfläche – alle Felder werden interaktiv ausgefüllt, kein manuelles Script-Editieren nötig.
 
 ---
 
@@ -135,7 +134,7 @@ logs\GDWH_{GDS}_{YYYYMMDD_HHMMSS}.log
 Der Ordner wird beim ersten Import automatisch erstellt.
 Die Sub-Scripts schreiben zusätzlich in den zentralen Netzwerk-Log:
 ```
-...\GDWH_STAC_imports\upload_GDWH\scrip_logs\
+\\...adr.admin.ch\...\GDWH_STAC_imports\upload_GDWH\scrip_logs\
 ```
 
 ---
