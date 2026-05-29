@@ -9,7 +9,7 @@ from osgeo import gdal
 from xml.dom import minidom
 import sys
 
-gdal.UseExceptions()  # FIX: GDAL-Fehler als Python-Exceptions statt stille None-Rückgabe
+gdal.UseExceptions()
 
 # ****************************** Log-Funktion ******************************
 
@@ -23,19 +23,18 @@ def log(message):
     print(message)
     if log_file:
         log_file.write(message + "\n")
-        log_file.flush()  # FIX: sicherstellen dass Einträge sofort auf Disk landen
+        log_file.flush()
 
 # ****************************** Helper Functions ******************************
 
 def calculate_md5(file_path):
     h = hashlib.md5()
     with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):  # FIX: 64 KB statt 4 KB → schneller bei grossen TIFs
+        for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
 
 def define_gds(path):
-    # FIX: os.path statt hartkodiertem "\\" → plattformrobust
     GDS = os.path.basename(os.path.dirname(path))
     log(f"GDS erkannt: {GDS}\n")
     return GDS
@@ -71,7 +70,6 @@ def parse_line_id_to_hundredths(line_id):
     """
     try:
         parts = line_id.split("_")
-        # FIX: explizite Prüfung statt IndexError aus dem Nichts
         if len(parts) < 2:
             raise ValueError(f"LineID '{line_id}' hat zu wenige Teile (mind. 2, getrennt durch '_')")
         date_str = parts[0]   # z.B. "20230820"
@@ -104,7 +102,7 @@ def parse_line_id_to_hundredths(line_id):
             "year": int(date_str[0:4]), "month": int(date_str[4:6]), "day": int(date_str[6:8]),
             "hh": hh, "mm": mm, "ss": ss, "hundredths": hundredths
         }
-    except (ValueError, IndexError) as e:  # FIX: spezifische Exceptions statt blanket Exception
+    except (ValueError, IndexError) as e:
         log(f"Fehler beim Parsen der LineID '{line_id}': {e}")
         return None
 
@@ -123,7 +121,6 @@ def format_stac_datetime(parsed):
     return (f"{parsed['year']:04d}-{parsed['month']:02d}-{parsed['day']:02d}"
             f"t{parsed['hh']:02d}{parsed['mm']:02d}{parsed['ss']:02d}{parsed['hundredths']:02d}")
 
-# FIX: format_first_acquisition und format_acquisition_times waren identisch → eine Funktion
 def format_acquisition_time(line_id):
     """Formatiert eine LineID als ISO8601-Zeitstempel mit Hundertstelsekunden."""
     return format_iso8601_hundredths(parse_line_id_to_hundredths(line_id))
@@ -141,7 +138,7 @@ def get_raster_attributes(file_path):
         cols, rows = raster_layer.RasterXSize, raster_layer.RasterYSize
         bx, by = band.GetBlockSize()
         return {
-            "CellSize": f"{(px + py) / 2:.4f}",  # FIX: fixe Dezimalstellen statt float-Artefakte wie "0.10000000000000001"
+            "CellSize": f"{(px + py) / 2:.4f}",
             "BlockSizeX": str(bx),
             "BlockSizeY": str(by),
             "CellCountWidth": str(cols),
@@ -195,7 +192,6 @@ def preview_xml_attributes(src, meta_info):
     AOI = extract_area(example_file)
     example_tilekey = extract_tile(example_file)
 
-    # FIX: src als Parameter verwenden statt globale Variable Quelle
     print("CHECK-ref.SYS.; ReferenzSystem OK?: ", src)
     print(meta_info.get("Auftragstyp", ""))
     print(AOI)
@@ -208,7 +204,6 @@ def preview_xml_attributes(src, meta_info):
 
     all_area_ids = meta_info.get("allAreaLineIDs", [])
     print(",".join(all_area_ids))
-    # FIX: format_acquisition_time statt entferntem format_acquisition_times
     acq_times = [format_acquisition_time(l) for l in all_area_ids]
     print(",".join(acq_times))
 
@@ -216,7 +211,6 @@ def preview_xml_attributes(src, meta_info):
     print(",".join(line_ids))
 
     if line_ids:
-        # FIX: format_acquisition_time statt entferntem format_first_acquisition
         print(format_acquisition_time(line_ids[0]))
 
     print("\n============================================================\n")
@@ -263,7 +257,6 @@ def create_xml(file_path, GDS, meta_info):
     if not all_area_ids:
         raise ValueError("Meta-Attribut 'allAreaLineIDs' muss mindestens eine LineID enthalten!")
 
-    # FIX: format_acquisition_time (zusammengeführte Funktion)
     formatted_times = [format_acquisition_time(x) for x in all_area_ids]
     ET.SubElement(root, "AcquisitionTimes").text = ",".join(formatted_times)
 
@@ -293,7 +286,6 @@ def create_xml(file_path, GDS, meta_info):
     with open(xml_filename, 'w', encoding="utf-8") as f:
         f.write(formatted_xml)
 
-    # FIX: kein Rückgabewert mehr — AOI und first_time wurden beim Aufrufer nie verwendet
 
 def update_file_csv(output_path, full_file_path, GDS):
     csv_file_path = os.path.join(output_path, 'files.csv')
@@ -306,7 +298,6 @@ def update_file_csv(output_path, full_file_path, GDS):
         tile = extract_tile(filename)
     elif GDS == "SB_DSM":
         tile = "1000"
-        # FIX: wkt_footprint()-Aufruf entfernt — footprint wurde berechnet aber NIE in row_data verwendet
     elif GDS == "SB_DSM_PUNKTWOLKE":
         tile = name_parts[-4] + "_" + name_parts[-3]
     else:
@@ -315,7 +306,6 @@ def update_file_csv(output_path, full_file_path, GDS):
     md5_hash = calculate_md5(full_file_path)
     row_data = f"NV\\{filename};{md5_hash};{tile};add;"
 
-    # FIX: keine führende Leerzeile mehr beim ersten Eintrag
     file_is_new = not os.path.exists(csv_file_path) or os.path.getsize(csv_file_path) == 0
     with open(csv_file_path, 'a', encoding='utf-8') as f:
         if not file_is_new:
@@ -327,7 +317,6 @@ def update_file_csv(output_path, full_file_path, GDS):
 def files_in_order(path, output_path, GDS, meta_info):
     global log_file
 
-    # FIX: erst hier erstellen (nicht auf Modul-Ebene) – gleiche Logik wie Script 1
     os.makedirs(LOG_DIR, exist_ok=True)
 
     log_name = os.path.basename(output_path.rstrip("/\\")) + ".log"
@@ -338,13 +327,11 @@ def files_in_order(path, output_path, GDS, meta_info):
     # Output-Verzeichnis sicherstellen — update_file_csv schreibt CSV direkt hinein
     os.makedirs(output_path, exist_ok=True)
 
-    # FIX: sorted() für deterministische Verarbeitungsreihenfolge
     for fn in sorted(os.listdir(path)):
         full_file_path = os.path.join(path, fn)
         if os.path.isfile(full_file_path) and fn.lower().endswith(('.tif', '.tiff', '.las', '.laz')):
             log(f"Verarbeite Datei: {fn}")
             try:
-                # FIX: Rückgabewert nicht mehr auspacken (war nie verwendet)
                 create_xml(full_file_path, GDS, meta_info)
                 update_file_csv(output_path, full_file_path, GDS)
             except Exception as e:
@@ -362,7 +349,7 @@ def create_and_copy_order(output_path, input_path, GDS):
         os.makedirs(os.path.join(output_path, 'PrecalculatedFormats', 'SB_DSM_PUNKTWOLKE'), exist_ok=True)
 
     log("\nStarte Kopiervorgang...\n")
-    nb = 0  # FIX: eigener Zähler nur für tatsächlich kopierte Dateien (nicht Verzeichnisse)
+    nb = 0
     for file_name in sorted(os.listdir(input_path)):
         source_file = os.path.join(input_path, file_name)
         if os.path.isfile(source_file):
@@ -385,7 +372,6 @@ if __name__ == "__main__":
     Quelle = r"A:\2025\BIRCH\DOP\LV95\DOP_NRGB_16BITS\1005"
     output_path = r"\\v0t0020a.adr.admin.ch\iprod\gdwh-ingest\BUCKET_INT\RASTER\SB_DOP_16\2025_BIRCH_DOP16_1005"
 
-    # FIX: Pfad-Validierung vor dem Start — frühzeitiger Abbruch mit klarer Meldung
     if not os.path.isdir(Quelle):
         print(f"FEHLER: Quellpfad nicht erreichbar: {Quelle}")
         sys.exit(1)
@@ -430,7 +416,6 @@ if __name__ == "__main__":
     # Sicherheitsvorschau anzeigen
     preview_xml_attributes(Quelle, meta_info)
 
-    # FIX: Log-Datei in try/finally schliessen → auch bei unerwarteten Exceptions sicher
     try:
         files_in_order(Quelle, output_path, GDS, meta_info)
         create_and_copy_order(output_path, Quelle, GDS)
