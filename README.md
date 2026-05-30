@@ -6,7 +6,10 @@ Python-Scripts zur automatisierten XML-Generierung, Datenvalidierung und Import-
 
 ## Starten
 
-### Empfohlen: GUI
+### GUI
+
+<img width="1273" height="1524" alt="grafik" src="https://github.com/user-attachments/assets/77cdad84-0a11-4841-83e2-fd443ddf19ed" />
+
 
 ```
 python 0_main_GDWH_import_GUI.py
