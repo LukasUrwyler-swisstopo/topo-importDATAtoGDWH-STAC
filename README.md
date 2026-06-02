@@ -115,6 +115,7 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 | `CameraSystem` | Kamerasystem | `"Leica ADS100"` / `"Leica ADS80"` / `"Leica DMC-4"` |
 
 > **SB_DSM:** NoData wird automatisch gesetzt (`"255 255 255"` für Hillshade, `"-3.4028235e+38"` für DSM-Raster).
+> 
 > **SB_DSM_PUNKTWOLKE:** kein NoData-Value.
 > 
 > **`Auftragstyp`:**
