@@ -148,7 +148,7 @@ def get_raster_attributes(file_path):
         cols, rows = raster.RasterXSize, raster.RasterYSize
         bx, by = band.GetBlockSize()
         return {
-            "CellSize": f"{(px+py)/2}",
+            "CellSize": f"{(px+py)/2:.10g}",
             "BlockSizeX": str(bx),
             "BlockSizeY": str(by),
             "CellCountWidth": str(cols),
@@ -445,6 +445,51 @@ def update_file_csv(output_path, full_file_path, GDS):
     _csv_append(csv_path, row)
 
 # ****************************** Hauptlogik ******************************
+def cleanup_input_folder(src, GDS):
+    """Loescht vor der Verarbeitung Altbestaende im Quellordner.
+
+    Pro GDS wird eine Whitelist der erlaubten Endungen definiert. Alles, was
+    nicht auf der Whitelist steht, wird geloescht (z.B. alte .xml, .ovr, .cpg,
+    .dbf, .lock, .pyr, .rdx, .lax). So enthaelt der Ordner vor dem Erstellen
+    der neuen XML nur noch die eigentlichen Nutzdaten.
+
+        SB_DOP / SB_DOP_16 / SB_DSM : nur .tif/.tiff/.tfw bleiben
+        SB_DSM_PUNKTWOLKE           : nur .laz/.ascii bleiben
+
+    Fuer unbekannte GDS wird nichts geloescht (Sicherheitsnetz).
+    """
+    whitelists = {
+        "SB_DOP":            {".tif", ".tiff", ".tfw"},
+        "SB_DOP_16":         {".tif", ".tiff", ".tfw"},
+        "SB_DSM":            {".tif", ".tiff", ".tfw"},
+        "SB_DSM_PUNKTWOLKE": {".laz", ".ascii"},
+    }
+
+    keep = whitelists.get(GDS)
+    if keep is None:
+        log(f"Bereinigung uebersprungen (kein Regelsatz fuer GDS '{GDS}').")
+        return
+
+    deleted = 0
+    for fn in os.listdir(src):
+        fp = os.path.join(src, fn)
+        if not os.path.isfile(fp):
+            continue
+        if os.path.splitext(fn)[1].lower() not in keep:
+            try:
+                os.remove(fp)
+                log(f"[BEREINIGT] geloescht: {fn}")
+                deleted += 1
+            except Exception as e:
+                log(f"[WARNUNG] konnte {fn} nicht loeschen: {e}")
+
+    erlaubt = "/".join(sorted(keep))
+    if deleted == 0:
+        log(f"Bereinigung: nichts zu loeschen (erlaubt: {erlaubt}).")
+    else:
+        log(f"Bereinigung: {deleted} Datei(en) geloescht (behalten: {erlaubt}).")
+
+
 def files_in_order(src, out, GDS, meta):
     global log_file
     missing_xml = []
@@ -455,6 +500,10 @@ def files_in_order(src, out, GDS, meta):
     log_path = os.path.join(LOG_DIR, log_name)
     log_file = open(log_path, 'w', encoding='utf-8')
     log(f"Log-Datei: {log_path}")
+
+    # Altbestaende bereinigen (nur SB_DOP/SB_DOP_16, gezielte Blacklist),
+    # bevor neue XML erzeugt werden.
+    cleanup_input_folder(src, GDS)
 
     # OPT: Dateien zuerst sammeln → ermöglicht Fortschrittsanzeige [i/n]
     files = [
