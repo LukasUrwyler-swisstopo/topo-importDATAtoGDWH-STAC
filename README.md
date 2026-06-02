@@ -109,8 +109,7 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 | `CustomAttribute` | Beschreibung des Datenprodukts | siehe Auswahlliste |
 | `Line_ID` | Befliegungslinien-IDs | `["YYYYMMDD_HHMM_QQQQQ", ...]` – erste ID = frühste Linie |
 | `allAreaLineIDs` | Alle LineIDs des Gebiets *(nur SB_DOP_16)* | `["YYYYMMDD_HHMM_QQQQQ", ...]` |
-| `NoData` | NoData-Wert | `"0 0 0"` / `"255 255 255"` (8BIT RGB) · 
-`"0 0 0 0"` / `"65535 65535 65535 65535"` (16BIT NRGB) |
+| `NoData` | NoData-Wert | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
 | `TerrainModel` | Verwendetes Geländemodell | siehe Auswahlliste |
 | `SourceReferenceSystem` | Koordinatensystem | `"(EPSG:2056) CH1903+ / LV95_LN02"` *(fix)* |
 | `CameraSystem` | Kamerasystem | `"Leica ADS100"` / `"Leica ADS80"` / `"Leica DMC-4"` |
