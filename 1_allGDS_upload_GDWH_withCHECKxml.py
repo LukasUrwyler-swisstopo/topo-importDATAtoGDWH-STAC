@@ -11,13 +11,15 @@ from xml.dom import minidom
 import sys
 
 # ****************************** Log-Funktion ******************************
-LOG_DIR = r"\\v0t0020a.adr.admin.ch\prod\topo\tbk\tbkn\BAFUprod\GDWH_STAC_imports\upload_GDWH\scrip_logs"
+# Hinweis: Dieses Script gibt alles auf die Konsole aus. Beim Start via GUI
+# faengt die GUI diese Ausgabe ab und schreibt sie in ihr eigenes Log
+# (logs\GDWHimport_...). Ein separates Datei-Log wird hier nicht mehr gefuehrt.
+# log_file bleibt als None bestehen, da der OSGeo4W-Runner nach dem Lauf
+# darauf zugreift (if mod.log_file: ...).
 log_file = None
 
 def log(message):
     print(message)
-    if log_file:
-        log_file.write(message + "\n")
 
 # ****************************** Helper ******************************
 def calculate_md5(file_path):
@@ -148,7 +150,7 @@ def get_raster_attributes(file_path):
         cols, rows = raster.RasterXSize, raster.RasterYSize
         bx, by = band.GetBlockSize()
         return {
-            "CellSize": f"{(px+py)/2}",
+            "CellSize": f"{(px+py)/2:.10g}",
             "BlockSizeX": str(bx),
             "BlockSizeY": str(by),
             "CellCountWidth": str(cols),
@@ -445,16 +447,57 @@ def update_file_csv(output_path, full_file_path, GDS):
     _csv_append(csv_path, row)
 
 # ****************************** Hauptlogik ******************************
+def cleanup_input_folder(src, GDS):
+    """Loescht vor der Verarbeitung Altbestaende im Quellordner.
+
+    Pro GDS wird eine Whitelist der erlaubten Endungen definiert. Alles, was
+    nicht auf der Whitelist steht, wird geloescht (z.B. alte .xml, .ovr, .cpg,
+    .dbf, .lock, .pyr, .rdx, .lax). So enthaelt der Ordner vor dem Erstellen
+    der neuen XML nur noch die eigentlichen Nutzdaten.
+
+        SB_DOP / SB_DOP_16 / SB_DSM : nur .tif/.tiff/.tfw bleiben
+        SB_DSM_PUNKTWOLKE           : nur .laz/.ascii bleiben
+
+    Fuer unbekannte GDS wird nichts geloescht (Sicherheitsnetz).
+    """
+    whitelists = {
+        "SB_DOP":            {".tif", ".tiff", ".tfw"},
+        "SB_DOP_16":         {".tif", ".tiff", ".tfw"},
+        "SB_DSM":            {".tif", ".tiff", ".tfw"},
+        "SB_DSM_PUNKTWOLKE": {".laz", ".ascii"},
+    }
+
+    keep = whitelists.get(GDS)
+    if keep is None:
+        log(f"Bereinigung uebersprungen (kein Regelsatz fuer GDS '{GDS}').")
+        return
+
+    deleted = 0
+    for fn in os.listdir(src):
+        fp = os.path.join(src, fn)
+        if not os.path.isfile(fp):
+            continue
+        if os.path.splitext(fn)[1].lower() not in keep:
+            try:
+                os.remove(fp)
+                log(f"[BEREINIGT] geloescht: {fn}")
+                deleted += 1
+            except Exception as e:
+                log(f"[WARNUNG] konnte {fn} nicht loeschen: {e}")
+
+    erlaubt = "/".join(sorted(keep))
+    if deleted == 0:
+        log(f"Bereinigung: nichts zu loeschen (erlaubt: {erlaubt}).")
+    else:
+        log(f"Bereinigung: {deleted} Datei(en) geloescht (behalten: {erlaubt}).")
+
+
 def files_in_order(src, out, GDS, meta):
-    global log_file
     missing_xml = []
 
-    os.makedirs(LOG_DIR, exist_ok=True)
-
-    log_name = os.path.basename(out.rstrip("/\\")) + ".log"
-    log_path = os.path.join(LOG_DIR, log_name)
-    log_file = open(log_path, 'w', encoding='utf-8')
-    log(f"Log-Datei: {log_path}")
+    # Altbestaende bereinigen (GDS-spezifische Whitelist),
+    # bevor neue XML erzeugt werden.
+    cleanup_input_folder(src, GDS)
 
     # OPT: Dateien zuerst sammeln → ermöglicht Fortschrittsanzeige [i/n]
     files = [
@@ -564,9 +607,5 @@ if __name__ == "__main__":
     preview_xml_attributes(Quelle, GDS, meta_info)
 
     # Processierung wenn YES
-    try:
-        files_in_order(Quelle, Ziel, GDS, meta_info)
-        create_and_copy_order(Ziel, Quelle, GDS)
-    finally:
-        if log_file:
-            log_file.close()
+    files_in_order(Quelle, Ziel, GDS, meta_info)
+    create_and_copy_order(Ziel, Quelle, GDS)

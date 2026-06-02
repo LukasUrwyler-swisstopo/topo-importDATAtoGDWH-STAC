@@ -2,24 +2,44 @@ import os
 import shutil
 import re
 from pathlib import Path
+from typing import Optional
 
 # ============================================================
 #  KONFIGURATION – hier den Inputordner anpassen, immer prüfen
 # ============================================================
 INPUT_FOLDER = r"A:\2025\BIRCH\DOP\LV95\DOP_NRGB_16BITS"   # <-- anpassen
+EXPECTED_LINE_ID = "1005"   # <-- 4-stellige Line_ID, die im INPUT_FOLDER erwartet wird
 # ============================================================
 
-def extract_line_id(filename: str) -> str | None:
+
+def extract_line_id(filename: str) -> Optional[str]:
     match = re.search(r'(\d{4})NRGB', filename, re.IGNORECASE)
     if match:
         return match.group(1)
     return None
 
 
+def check_line_id_present(input_folder: str, expected_line_id: str) -> bool:
+    """Prüft, ob mindestens eine Datei im INPUT_FOLDER die erwartete Line_ID trägt.
+
+    Gibt True zurück wenn gefunden, sonst False. Wirft FileNotFoundError,
+    wenn der INPUT_FOLDER selbst nicht existiert.
+    """
+    input_path = Path(input_folder)
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"INPUT_FOLDER nicht gefunden: {input_path}")
+
+    for file in input_path.iterdir():
+        if file.is_file() and extract_line_id(file.name) == expected_line_id:
+            return True
+    return False
+
+
 def delete_unwanted_files(input_folder: str) -> None:
     """Loescht alle .pyr und .xml Dateien im Inputordner."""
     input_path = Path(input_folder)
-    extensions = {".pyr", ".xml"}
+    extensions = {".pyr", ".xml", ".rdx"}
     deleted = 0
 
     for file in input_path.iterdir():
@@ -96,6 +116,18 @@ if __name__ == "__main__":
         print("   LineID Organizer - Dateien nach LineID sortieren")
         print("=" * 60)
         print(f"Inputordner: {INPUT_FOLDER}")
+        print()
+
+        # -- Schritt 0: Line_ID-Pruefung ------------------------
+        # Abbruch, wenn die erwartete Line_ID nicht im INPUT_FOLDER vorkommt.
+        # Laeuft vor dem Loeschen, damit bei falschem Pfad nichts veraendert wird.
+        print(f">>> Pruefe, ob Line_ID '{EXPECTED_LINE_ID}' im INPUT_FOLDER vorhanden ist <<<")
+        print()
+        if not check_line_id_present(INPUT_FOLDER, EXPECTED_LINE_ID):
+            print(f"[ABBRUCH] Die line_ID '{EXPECTED_LINE_ID}' wurde im angegebenen "
+                  f"INPUT_FOLDER nicht gefunden. Bitte pruefen Sie den gewaehlten Pfad.")
+            raise SystemExit(1)
+        print(f"-> Line_ID '{EXPECTED_LINE_ID}' gefunden. Verarbeitung wird fortgesetzt.")
         print()
 
         # -- Schritt 1: .pyr und .xml loeschen ------------------

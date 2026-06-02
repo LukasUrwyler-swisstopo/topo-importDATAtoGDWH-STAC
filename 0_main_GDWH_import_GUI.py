@@ -345,8 +345,61 @@ class SicherheitsCheckDialog(tk.Toplevel):
         self.grab_set()
         self.focus_set()
 
+        # Header (fix oben)
+        hdr = tk.Frame(self, bg=T["hdr_bg"])
+        hdr.pack(side="top", fill="x")
+        tk.Label(hdr,
+                 text="  Sicherheitscheck  –  Alle Werte vor dem Import prüfen",
+                 font=("Segoe UI", 11, "bold"),
+                 bg=T["hdr_bg"], fg=T["hdr_fg"]).pack(side="left", pady=10)
+
+        # Button-Bereich (fix unten) – wird zuerst gepackt, damit er beim
+        # Verkleinern des Fensters nie vom Scrollbereich verdeckt wird.
+        tk.Frame(self, height=1, bg=T["sep"]).pack(side="bottom", fill="x")
+        btn_row = tk.Frame(self, bg=T["root"])
+        btn_row.pack(side="bottom", fill="x", padx=14, pady=10)
+
+        # Scrollbarer Inhaltsbereich dazwischen
+        scroll_wrap = tk.Frame(self, bg=T["root"])
+        scroll_wrap.pack(side="top", fill="both", expand=True)
+        canvas = tk.Canvas(scroll_wrap, bg=T["root"],
+                           highlightthickness=0, bd=0)
+        vscroll = ttk.Scrollbar(scroll_wrap, orient="vertical",
+                                command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+        vscroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        scroll_body = tk.Frame(canvas, bg=T["root"])
+        body_win = canvas.create_window((0, 0), window=scroll_body, anchor="nw")
+
+        def _on_body_config(_=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        scroll_body.bind("<Configure>", _on_body_config)
+
+        def _on_canvas_config(event):
+            # innerer Frame folgt der Canvas-Breite
+            canvas.itemconfigure(body_win, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_config)
+
+        # Mausrad-Scrolling (Windows / Linux)
+        def _on_mousewheel(event):
+            if event.num == 5 or event.delta < 0:
+                canvas.yview_scroll(1, "units")
+            elif event.num == 4 or event.delta > 0:
+                canvas.yview_scroll(-1, "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", _on_mousewheel)
+        canvas.bind_all("<Button-5>", _on_mousewheel)
+        # Beim Schliessen die globalen Bindings wieder lösen
+        self._unbind_wheel = lambda: (
+            canvas.unbind_all("<MouseWheel>"),
+            canvas.unbind_all("<Button-4>"),
+            canvas.unbind_all("<Button-5>"),
+        )
+
         def _section(title):
-            outer = tk.Frame(self, bg=T["root"])
+            outer = tk.Frame(scroll_body, bg=T["root"])
             outer.pack(fill="x", padx=14, pady=(10, 2))
             tk.Label(outer, text=title,
                      font=("Segoe UI", 8, "bold"),
@@ -380,14 +433,6 @@ class SicherheitsCheckDialog(tk.Toplevel):
                      anchor="w", wraplength=580, justify="left",
                      padx=8, pady=5).pack(fill="x")
 
-        # Header
-        hdr = tk.Frame(self, bg=T["hdr_bg"])
-        hdr.pack(fill="x")
-        tk.Label(hdr,
-                 text="  Sicherheitscheck  –  Alle Werte vor dem Import prüfen",
-                 font=("Segoe UI", 11, "bold"),
-                 bg=T["hdr_bg"], fg=T["hdr_fg"]).pack(side="left", pady=10)
-
         # Metadaten
         sec1 = _section("METADATEN")
         _kv(sec1, "GDS:", gds)
@@ -408,41 +453,72 @@ class SicherheitsCheckDialog(tk.Toplevel):
 
         # Pfade
         sec2 = _section("PFADE")
-        _path_block(sec2, "Quelle:", quelle)
+        if gds == "SB_DOP":
+            _path_block(sec2, "Data-Input Path (DOP-Mosaik):", quelle)
+        elif gds == "SB_DOP_16":
+            _path_block(sec2, "Input-Pfad (Subfolder der Line_ID):", quelle)
+        else:
+            _path_block(sec2, "Quelle:", quelle)
         _path_block(sec2, "Ziel:", ziel)
 
-        # CRS-Bestätigung durch Nutzer
-        sec3 = _section("REFERENZSYSTEM  –  NUTZERBESTÄTIGUNG ERFORDERLICH")
+        # Kontrollfragen durch Nutzer – GDS-spezifisch
+        sec3 = _section("KONTROLLFRAGEN  –  NUTZERBESTÄTIGUNG ERFORDERLICH")
         bg_c, fg_c = box["warn"]
+
         if gds in ("SB_DSM", "SB_DSM_PUNKTWOLKE"):
             expected_crs = "DSM:  LV95_LN02  (EPSG:2056 horizontal  +  LN02 vertikal)"
         else:
             expected_crs = "DOP:  LV95  (EPSG:2056 horizontal)"
-        crs_box = tk.Frame(sec3, bg=bg_c, padx=12, pady=10)
-        crs_box.pack(fill="x", pady=(0, 4))
-        tk.Label(crs_box,
-                 text="Ist der Inputpfad im korrekten Referenzsystem?",
-                 font=("Segoe UI", 11, "bold"),
-                 bg=bg_c, fg=fg_c, anchor="w").pack(anchor="w")
-        tk.Label(crs_box,
-                 text=f"  {expected_crs}",
-                 font=("Segoe UI", 10),
-                 bg=bg_c, fg=fg_c, anchor="w").pack(anchor="w", pady=(4, 8))
-        self._crs_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(crs_box,
-                       text="  Ja – Referenzsystem ist korrekt",
-                       variable=self._crs_var,
-                       font=("Segoe UI", 10, "bold"),
-                       bg=bg_c, fg=fg_c,
-                       activebackground=bg_c, activeforeground=fg_c,
-                       selectcolor=bg_c,
-                       command=self._on_crs_toggle).pack(anchor="w")
 
-        # Trennlinie + Buttons
-        tk.Frame(self, height=1, bg=T["sep"]).pack(fill="x", pady=(12, 0))
-        btn_row = tk.Frame(self, bg=T["root"])
-        btn_row.pack(fill="x", padx=14, pady=10)
+        # Fragenkatalog je GDS festlegen
+        if gds == "SB_DOP_16":
+            check_questions = [
+                "Ist der Input-Pfad (Subfolder, welcher für die Ausführung des Scripts "
+                "verwendet wird) korrekt und passt er zur Line_ID, die importiert werden soll?",
+                "Sind die NoData-Werte korrekt? (16BIT, 4-Band: schwarze "
+                "Background-Pixel = 0 0 0 0  /  weisse = 65535 65535 65535 65535)   "
+                "Vorgängig visuell kontrollieren (ApplicationsMaster / ArcGIS / QGIS).",
+            ]
+        elif gds == "SB_DOP":
+            check_questions = [
+                "Ist der Input Folder der korrekte Pfad zum DOP-Mosaik, "
+                "welches importiert werden soll?",
+                "Sind die Line_IDs korrekt?",
+                "Ist die erste aufgelistete Line_ID auch die erste Line_ID "
+                "der beflogenen AREA / AOI?",
+                "Sind die NoData-Werte korrekt? (8BIT, 3-Band: schwarze "
+                "Background-Pixel = 0 0 0  /  weisse = 255 255 255)   "
+                "Vorgängig visuell kontrollieren (ApplicationsMaster / ArcGIS / QGIS).",
+            ]
+        else:
+            check_questions = [
+                f"Ist der Inputpfad im korrekten Referenzsystem?   ({expected_crs})",
+            ]
 
+        chk_box = tk.Frame(sec3, bg=bg_c, padx=12, pady=10)
+        chk_box.pack(fill="x", pady=(0, 4))
+
+        # Eine BooleanVar pro Frage; Import erst aktiv wenn alle angehakt sind.
+        self._check_vars = []
+        for i, frage in enumerate(check_questions):
+            var = tk.BooleanVar(value=False)
+            self._check_vars.append(var)
+            tk.Label(chk_box,
+                     text=frage,
+                     font=("Segoe UI", 10, "bold"),
+                     bg=bg_c, fg=fg_c, anchor="w",
+                     wraplength=560, justify="left").pack(anchor="w",
+                     pady=(0 if i == 0 else 8, 4))
+            tk.Checkbutton(chk_box,
+                           text="  Ja – kontrolliert und korrekt",
+                           variable=var,
+                           font=("Segoe UI", 10, "bold"),
+                           bg=bg_c, fg=fg_c,
+                           activebackground=bg_c, activeforeground=fg_c,
+                           selectcolor=bg_c,
+                           command=self._on_crs_toggle).pack(anchor="w")
+
+        # Buttons in das fix unten verankerte btn_row (oben definiert)
         self._import_btn = tk.Button(btn_row, text="▶   Import starten",
                   font=("Segoe UI", 10, "bold"),
                   bg=T["btn"], fg=T["fg_dim"],
@@ -457,24 +533,62 @@ class SicherheitsCheckDialog(tk.Toplevel):
                   bg=T["btn"], fg=T["fg"],
                   activebackground=T["btn_hover"], activeforeground=T["fg"],
                   relief="flat", padx=14, pady=7, cursor="hand2",
-                  command=self.destroy).pack(side="right", padx=(0, 10))
+                  command=self._on_close).pack(side="right", padx=(0, 10))
 
         self.update_idletasks()
         w = 640
-        h = min(700, self.winfo_reqheight() + 20)
+        # Wunschhoehe = voller Inhalt. Wird sie groesser als der Bildschirm,
+        # greift der Scrollbereich und der Button bleibt trotzdem fix unten.
+        screen_h = self.winfo_screenheight()
+        req_h = self.winfo_reqheight() + 24
+        h = min(req_h, screen_h - 80)
         px = parent.winfo_rootx() + parent.winfo_width() // 2 - w // 2
         py = parent.winfo_rooty() + parent.winfo_height() // 2 - h // 2
         self.geometry(f"{w}x{h}+{max(0, px)}+{max(0, py)}")
+        # Vertikal frei skalierbar (Breite fix), Mindesthoehe sichert Button-Sicht
+        self.resizable(False, True)
+        self.minsize(w, min(h, 420))
 
-        self.bind("<Escape>", lambda _: self.destroy())
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        # Titelleiste im Darkmode dunkel faerben (Windows DWM)
+        self._set_titlebar_dark(self._dark)
+
+        self.bind("<Escape>", lambda _: self._on_close())
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        # Globale Mausrad-Bindings lösen, bevor das Fenster zerstört wird
+        try:
+            self._unbind_wheel()
+        except Exception:
+            pass
+        self.destroy()
+
+    def _set_titlebar_dark(self, dark):
+        # Fenster muss sichtbar sein bevor DWM reagiert – sonst erneut versuchen
+        if not self.winfo_ismapped():
+            self.after(50, lambda: self._set_titlebar_dark(dark))
+            return
+        try:
+            hwnd  = int(self.wm_frame(), 16)
+            value = ctypes.c_int(1 if dark else 0)
+            for attr in (20, 19):   # 20 = Win11 / Win10 2004+; 19 = ältere Builds
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+                    break
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
+        except Exception:
+            pass
 
     def _confirm(self):
         self.result = True
+        try:
+            self._unbind_wheel()
+        except Exception:
+            pass
         self.destroy()
 
     def _on_crs_toggle(self):
-        if self._crs_var.get():
+        if all(v.get() for v in self._check_vars):
             self._import_btn.config(
                 state="normal",
                 bg="#005fa3" if self._dark else "#0063b1",
@@ -1089,6 +1203,47 @@ class GDWHApp(tk.Tk):
                 pass
         self.destroy()
 
+    # ── Helfer: AREA + Archiv-Log ─────────────────────────────────────────────
+    @staticmethod
+    def _area_from_ziel(ziel, gds):
+        """Leitet den AREA-Namen aus dem Zielordner ab.
+
+        Zielordner folgt dem Muster '20XX_AREA_<TYP>...' (z.B.
+        '2025_GRIES_DOP16_1005'). Es wird der Teil zwischen Jahr und dem
+        naechsten Typ-Token (DOP/DSM/TIN/hillshade) genommen. Schlaegt das
+        fehl, dient der bereinigte Ordnername als Fallback (nur fuer den
+        Log-Namen, daher unkritisch).
+        """
+        base = os.path.basename(ziel.rstrip("/\\"))
+        m = re.search(r'20\d{2}_(.+?)_(?:DOP|DSM|TIN|hillshade)',
+                      base, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        # Fallback: fuehrendes Jahr abschneiden, sonst ganzer Basename
+        m2 = re.match(r'20\d{2}_(.+)', base)
+        return (m2.group(1) if m2 else base) or "UNKNOWN"
+
+    @staticmethod
+    def _sanitize(text):
+        """Macht einen String dateinamen-tauglich (keine Pfad-/Sonderzeichen)."""
+        return re.sub(r'[^A-Za-z0-9_.-]', '_', str(text)).strip("_") or "UNKNOWN"
+
+    def _write_archive_log(self, gds, area, line_id):
+        """Haengt einen Eintrag an das fortlaufende Archiv-Log an.
+
+        Eine einzige Datei (logs\\GDWHimport_archived_AREA_proGDS.log), die
+        bei jedem Import um eine Zeile erweitert wird:  {GDS}_{AREA}_{Line_ID}
+        """
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            archive_path = os.path.join(LOG_DIR, "GDWHimport_archived_AREA_proGDS.log")
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            entry = f"{gds}_{area}_{line_id}"
+            with open(archive_path, "a", encoding="utf-8") as f:
+                f.write(f"{stamp}  {entry}\n")
+        except Exception as e:
+            print(f"[WARNUNG] Archiv-Log konnte nicht geschrieben werden: {e}")
+
     # ── Import starten ────────────────────────────────────────────────────────
     def _start_import(self):
         if self._running:
@@ -1132,14 +1287,24 @@ class GDWHApp(tk.Tk):
         self._clear_log()
 
         # Logdatei öffnen (logs-Ordner neben diesem Script)
+        # Name: GDWHimport_{GDS}_{AREA}_{Line_ID}_{YYYYmmdd_HHMMSS}.log
+        line_ids   = meta.get("Line_ID", [])
+        first_line = line_ids[0] if line_ids else "UNKNOWN"
+        area       = self._area_from_ziel(ziel, gds)
+        area_s     = self._sanitize(area)
+        line_s     = self._sanitize(first_line)
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_path = os.path.join(LOG_DIR, f"GDWH_{gds}_{ts}.log")
+            log_path = os.path.join(
+                LOG_DIR, f"GDWHimport_{gds}_{area_s}_{line_s}_{ts}.log")
             self._log_file = open(log_path, "w", encoding="utf-8")
         except Exception as e:
             self._log_file = None
             print(f"[WARNUNG] Logdatei konnte nicht erstellt werden: {e}")
+
+        # Fortlaufendes Archiv-Log erweitern: {GDS}_{AREA}_{Line_ID}
+        self._write_archive_log(gds, area_s, line_s)
 
         self._log(f"=== GDWH Import gestartet – GDS: {gds} ===\n\n")
 
