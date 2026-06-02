@@ -12,18 +12,15 @@ import sys
 gdal.UseExceptions()
 
 # ****************************** Log-Functions ******************************
-
-LOG_DIR = r"\\v0t0020a.adr.admin.ch\prod\topo\tbk\tbkn\BAFUprod\GDWH_STAC_imports\upload_GDWH\scrip_logs"
-# os.makedirs wird erst in files_in_order() aufgerufen –
-# nicht auf Modul-Ebene, damit ein nicht-erreichbarer UNC-Pfad
-# den Import nicht sofort abbricht.
+# Hinweis: Dieses Script gibt alles auf die Konsole aus. Beim Start via GUI
+# faengt die GUI diese Ausgabe ab und schreibt sie in ihr eigenes Log
+# (logs\GDWHimport_...). Ein separates Datei-Log wird hier nicht mehr gefuehrt.
+# log_file bleibt als None bestehen, da der OSGeo4W-Runner nach dem Lauf
+# darauf zugreift (if mod.log_file: ...).
 log_file = None
 
 def log(message):
     print(message)
-    if log_file:
-        log_file.write(message + "\n")
-        log_file.flush()
 
 # ****************************** Helper Functions ******************************
 
@@ -138,7 +135,7 @@ def get_raster_attributes(file_path):
         cols, rows = raster_layer.RasterXSize, raster_layer.RasterYSize
         bx, by = band.GetBlockSize()
         return {
-            "CellSize": f"{(px + py) / 2:.4f}",
+            "CellSize": f"{(px + py) / 2:.10g}",
             "BlockSizeX": str(bx),
             "BlockSizeY": str(by),
             "CellCountWidth": str(cols),
@@ -315,15 +312,6 @@ def update_file_csv(output_path, full_file_path, GDS):
 # ****************************** Main Functions ******************************
 
 def files_in_order(path, output_path, GDS, meta_info):
-    global log_file
-
-    os.makedirs(LOG_DIR, exist_ok=True)
-
-    log_name = os.path.basename(output_path.rstrip("/\\")) + ".log"
-    log_path = os.path.join(LOG_DIR, log_name)
-    log_file = open(log_path, 'w', encoding='utf-8')
-    log(f"Log-Datei erstellt: {log_path}")
-
     # Output-Verzeichnis sicherstellen — update_file_csv schreibt CSV direkt hinein
     os.makedirs(output_path, exist_ok=True)
 
@@ -416,9 +404,5 @@ if __name__ == "__main__":
     # Sicherheitsvorschau anzeigen
     preview_xml_attributes(Quelle, meta_info)
 
-    try:
-        files_in_order(Quelle, output_path, GDS, meta_info)
-        create_and_copy_order(output_path, Quelle, GDS)
-    finally:
-        if log_file:
-            log_file.close()
+    files_in_order(Quelle, output_path, GDS, meta_info)
+    create_and_copy_order(output_path, Quelle, GDS)
