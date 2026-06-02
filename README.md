@@ -173,9 +173,9 @@ So bleibt nachvollziehbar, welche AREAS für welches GDS importiert wurden.
 ## Hinweise
 
 **Line_IDs**
-- Die erste `Line_ID` **muss** die frühste Befliegungslinie (frühester Aufnahmezeitpunkt) des AOIs sein – sie bestimmt `FirstAcquisitionTime` und `StacItemIdDatetime`.
+- Die erste `Line_ID` **muss** die frühste Befliegungslinie (frühester Aufnahmezeitpunkt) des AOIs sein – sie bestimmt `FirstAcquisitionTime` und `StacItemIdDatetime`. (ausgenommen SB_DOP_16, siehe weiter unten*)
 - Mehrere LineIDs auf einmal eingeben: Spalte in Excel markieren → Ctrl+C → ins LineID-Feld klicken → Ctrl+V (jede Zeile wird einzeln validiert).
-- Bei `SB_DOP_16` ist genau **eine** Line_ID erlaubt; alle Fluglinien des Gebiets kommen separat ins Feld `allAreaLineIDs`.
+- * Bei `SB_DOP_16` ist genau **eine** Line_ID erlaubt; alle Fluglinien des Gebiets kommen separat ins Feld `allAreaLineIDs`.
 
 **Pfade**
 - Zielpfad muss den GDS-Namen als vorletzten Ordner enthalten (z.B. `…\SB_DSM\2025_AREA_DSM`) – die GUI warnt bei Abweichung.
