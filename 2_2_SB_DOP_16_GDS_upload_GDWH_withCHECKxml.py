@@ -138,7 +138,7 @@ def get_raster_attributes(file_path):
         cols, rows = raster_layer.RasterXSize, raster_layer.RasterYSize
         bx, by = band.GetBlockSize()
         return {
-            "CellSize": f"{(px + py) / 2:.4f}",
+            "CellSize": f"{(px + py) / 2:.10g}",
             "BlockSizeX": str(bx),
             "BlockSizeY": str(by),
             "CellCountWidth": str(cols),
