@@ -1319,17 +1319,22 @@ class GDWHApp(tk.Tk):
         """Macht einen String dateinamen-tauglich (keine Pfad-/Sonderzeichen)."""
         return re.sub(r'[^A-Za-z0-9_.-]', '_', str(text)).strip("_") or "UNKNOWN"
 
-    def _write_archive_log(self, gds, area, line_id):
+    def _write_archive_log(self, gds, area, line_id, auftragstyp=""):
         """Haengt einen Eintrag an das fortlaufende Archiv-Log an.
 
-        Eine einzige Datei (logs\\GDWHimport_archived_AREA_proGDS.log), die
-        bei jedem Import um eine Zeile erweitert wird:  {GDS}_{AREA}_{Line_ID}
+        Format:  {stamp}  {GDS}_{AREA}_{Line_ID} = {STAC-Link}
         """
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
             archive_path = os.path.join(LOG_DIR, "GDWHimport_archived_AREA_proGDS.log")
-            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            entry = f"{gds}_{area}_{line_id}"
+            stamp     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            stac_dt   = self._format_stac_datetime(line_id)
+            stac_link = (
+                "https://sys-data.int.bgdi.ch/#/collections/"
+                "ch.swisstopo.spezialbefliegungen/items/"
+                f"{auftragstyp}-{stac_dt}"
+            )
+            entry = f"{gds}_{area}_{line_id} = {stac_link}"
             with open(archive_path, "a", encoding="utf-8") as f:
                 f.write(f"{stamp}  {entry}\n")
         except Exception as e:
@@ -1398,8 +1403,9 @@ class GDWHApp(tk.Tk):
             self._log_file = None
             print(f"[WARNUNG] Logdatei konnte nicht erstellt werden: {e}")
 
-        # Fortlaufendes Archiv-Log erweitern: {GDS}_{AREA}_{Line_ID}
-        self._write_archive_log(gds, area_s, line_s)
+        # Fortlaufendes Archiv-Log erweitern: {GDS}_{AREA}_{Line_ID} = {STAC-Link}
+        self._write_archive_log(gds, area_s, line_s,
+                                auftragstyp=meta.get("Auftragstyp", ""))
 
         self._log(f"=== GDWH Import gestartet – GDS: {gds} ===\n\n")
 
