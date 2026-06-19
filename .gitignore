@@ -1,1 +1,5 @@
 #zu ignorierende Ordner und Dateien
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
