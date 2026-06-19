@@ -33,6 +33,7 @@ Die Scripts automatisieren den gesamten Prozess von der Datenvorbereitung bis zu
 | `2_1_SB_DOP_16_FOLDERorganize_by_lineID.py` | Sub-Script – prüft die Line_ID im Quellordner, bereinigt Altdateien und sortiert 16BIT-DOP-Dateien nach LineID in Unterordner | (direkt möglich, Pfad anpassen) |
 | `2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py` | Sub-Script für `SB_DOP_16` | (direkt möglich, Working Part anpassen) |
 | `_osgeo_runner.py` | **Interner Subprocess-Runner** – wird von der GUI via OSGeo4W Python aufgerufen; nicht direkt starten | – |
+| `test_functions.py` | **Unit-Tests** – prüft die reinen Python-Funktionen ohne externe Abhängigkeiten (kein OSGeo4W nötig) | ✓ (normales Python) |
 
 > Alle Scripts müssen **im selben Ordner** liegen. `_gdwh_config.json` wird beim ersten Start der GUI automatisch erstellt und speichert den OSGeo4W Python-Pfad.
 
@@ -181,6 +182,31 @@ Eintrag pro Import (Zeitstempel + `{GDS}_{AREA}_{Line_ID}`), z.B.:
 So bleibt nachvollziehbar, welche AREAS für welches GDS importiert wurden.
 
 > Die Sub-Scripts (1, 2_2) führen kein eigenes Logfile mehr – ihre Konsolenausgabe wird vollständig von der GUI mitgeschrieben.
+
+---
+
+## Tests
+
+`test_functions.py` prüft die reinen Python-Funktionen der Sub-Scripts, ohne dass OSGeo4W oder echte Dateien benötigt werden. `osgeo`/`gdal` wird als Mock registriert.
+
+```bash
+python test_functions.py
+python -m pytest test_functions.py -v   # falls pytest installiert
+```
+
+| Testklasse | Getestete Funktion | Script(s) |
+|---|---|---|
+| `TestParseLineId` | `parse_line_id_to_hundredths` | Script 1, Script 2_2 |
+| `TestFormatIso8601` | `format_iso8601_hundredths` | Script 1, Script 2_2 |
+| `TestFormatStacDatetime` | `format_stac_datetime` | Script 1, Script 2_2 |
+| `TestExtractAreaAllGDS` | `extract_area` | Script 1 |
+| `TestExtractAreaDop16` | `extract_area` | Script 2_2 |
+| `TestExtractTileLv95AllGDS` | `extract_tile_lv95` | Script 1 |
+| `TestExtractTileDop16` | `extract_tile` | Script 2_2 |
+| `TestGetNodataValue` | `get_nodata_value` | Script 1 |
+| `TestCsvAppend` | `_csv_append` | Script 1 |
+| `TestExtractLineId` | `extract_line_id` | Script 2_1 |
+| `TestParseUndFormatKombiniert` | Parse + Format End-zu-End | Script 1 |
 
 ---
 
