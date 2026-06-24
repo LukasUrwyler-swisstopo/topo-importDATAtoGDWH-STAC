@@ -633,6 +633,7 @@ class GDWHApp(tk.Tk):
         self._log_q           = queue.Queue()
         self._log_file        = None
         self._pending_archive = None
+        self._log_visible     = True
         self.gds_var        = tk.StringVar(value="SB_DOP")
         self._dim_labels    = []   # Labels mit fg_dim (grau)
         self._accent_labels = []   # Labels mit accent (blau)
@@ -713,15 +714,16 @@ class GDWHApp(tk.Tk):
         # Mausrad soll Combobox-Auswahl nicht versehentlich verstellen
         self.bind_class("TCombobox", "<MouseWheel>", self._fwd_wheel_to_canvas)
 
-        self._build_meta(self._sf)
         self._build_paths(self._sf)
+        self._build_meta(self._sf)
 
         # Log
-        ttk.Separator(self).pack(fill="x", padx=12, pady=4)
-        log_frame = ttk.LabelFrame(self, text="Log-Ausgabe", padding=4, style="Section.TLabelframe")
-        log_frame.pack(fill="x", padx=12, pady=(0, 4))
+        self._log_sep = ttk.Separator(self)
+        self._log_sep.pack(fill="x", padx=12, pady=4)
+        self._log_frame = ttk.LabelFrame(self, text="Log-Ausgabe", padding=4, style="Section.TLabelframe")
+        self._log_frame.pack(fill="x", padx=12, pady=(0, 4))
         self.log_box = scrolledtext.ScrolledText(
-            log_frame, height=11, wrap="word", state="disabled",
+            self._log_frame, height=11, wrap="word", state="disabled",
             font=("Courier New", 9))
         self.log_box.pack(fill="both", expand=True)
 
@@ -741,6 +743,9 @@ class GDWHApp(tk.Tk):
         self.start_btn.pack(side="right", ipadx=22, ipady=7)
         ttk.Button(self._btn_row, text="Log löschen",
                     command=self._clear_log).pack(side="right", padx=(0, 10))
+        self._terminal_btn = ttk.Button(self._btn_row, text="Terminal ▴",
+                                         command=self._toggle_log)
+        self._terminal_btn.pack(side="left")
 
     def _build_meta(self, parent):
         sec = ttk.LabelFrame(parent, text="Meta-Informationen", padding=10, style="Section.TLabelframe")
@@ -1209,6 +1214,20 @@ class GDWHApp(tk.Tk):
         self.log_box.config(state="normal")
         self.log_box.delete("1.0", "end")
         self.log_box.config(state="disabled")
+
+    def _toggle_log(self):
+        if self._log_visible:
+            self._log_frame.pack_forget()
+            self._log_sep.pack_forget()
+            self._terminal_btn.config(text="Terminal ▾")
+            self._log_visible = False
+        else:
+            self._log_sep.pack(fill="x", padx=12, pady=4,
+                               before=self._progress_frame)
+            self._log_frame.pack(fill="x", padx=12, pady=(0, 4),
+                                 before=self._progress_frame)
+            self._terminal_btn.config(text="Terminal ▴")
+            self._log_visible = True
 
     def _poll_log(self):
         while True:
