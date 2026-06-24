@@ -633,7 +633,7 @@ class GDWHApp(tk.Tk):
         self._log_q           = queue.Queue()
         self._log_file        = None
         self._pending_archive = None
-        self._log_visible     = True
+        self._log_visible     = False
         self.gds_var        = tk.StringVar(value="SB_DOP")
         self._dim_labels    = []   # Labels mit fg_dim (grau)
         self._accent_labels = []   # Labels mit accent (blau)
@@ -717,11 +717,9 @@ class GDWHApp(tk.Tk):
         self._build_paths(self._sf)
         self._build_meta(self._sf)
 
-        # Log
+        # Log (initial versteckt – per Terminal-Button einblendbar)
         self._log_sep = ttk.Separator(self)
-        self._log_sep.pack(fill="x", padx=12, pady=4)
         self._log_frame = ttk.LabelFrame(self, text="Log-Ausgabe", padding=4, style="Section.TLabelframe")
-        self._log_frame.pack(fill="x", padx=12, pady=(0, 4))
         self.log_box = scrolledtext.ScrolledText(
             self._log_frame, height=11, wrap="word", state="disabled",
             font=("Courier New", 9))
@@ -743,7 +741,7 @@ class GDWHApp(tk.Tk):
         self.start_btn.pack(side="right", ipadx=22, ipady=7)
         ttk.Button(self._btn_row, text="Log löschen",
                     command=self._clear_log).pack(side="right", padx=(0, 10))
-        self._terminal_btn = ttk.Button(self._btn_row, text="Terminal ▴",
+        self._terminal_btn = ttk.Button(self._btn_row, text="Terminal ▾",
                                          command=self._toggle_log)
         self._terminal_btn.pack(side="left")
 
@@ -856,6 +854,7 @@ class GDWHApp(tk.Tk):
         ttk.Label(self.if_frame, text="INPUT_FOLDER\n(DOP_NRGB_16BITS\nHauptordner):",
                    justify="left", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=3)
         self.if_var = tk.StringVar()
+        self.if_var.trace_add("write", self._on_input_path_change)
         ttk.Entry(self.if_frame, textvariable=self.if_var
                    ).grid(row=0, column=1, sticky="ew", padx=(8, 4), pady=3)
         ttk.Button(self.if_frame, text="Ordner…",
@@ -872,6 +871,7 @@ class GDWHApp(tk.Tk):
         self.quelle_frame.columnconfigure(1, weight=1)
         ttk.Label(self.quelle_frame, text="Data-Input Path:", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=3)
         self.quelle_var = tk.StringVar()
+        self.quelle_var.trace_add("write", self._on_input_path_change)
         ttk.Entry(self.quelle_frame, textvariable=self.quelle_var
                    ).grid(row=0, column=1, sticky="ew", padx=(8, 4), pady=3)
         ttk.Button(self.quelle_frame, text="Ordner…",
@@ -1126,6 +1126,10 @@ class GDWHApp(tk.Tk):
         if folder:
             var.set(folder.replace("/", "\\"))
 
+    def _on_input_path_change(self, *_):
+        if self.ziel_var.get():
+            self.ziel_var.set("")
+
     # ── Validierung ───────────────────────────────────────────────────────────
     def _validate(self):
         gds    = self.gds_var.get()
@@ -1223,9 +1227,9 @@ class GDWHApp(tk.Tk):
             self._log_visible = False
         else:
             self._log_sep.pack(fill="x", padx=12, pady=4,
-                               before=self._progress_frame)
+                               before=self._btn_row)
             self._log_frame.pack(fill="x", padx=12, pady=(0, 4),
-                                 before=self._progress_frame)
+                                 before=self._btn_row)
             self._terminal_btn.config(text="Terminal ▴")
             self._log_visible = True
 
