@@ -628,10 +628,11 @@ class GDWHApp(tk.Tk):
         self.minsize(720, min(860, win_h))
         self.resizable(True, True)
 
-        self._running       = False
-        self._dark          = False
-        self._log_q         = queue.Queue()
-        self._log_file      = None
+        self._running         = False
+        self._dark            = False
+        self._log_q           = queue.Queue()
+        self._log_file        = None
+        self._pending_archive = None
         self.gds_var        = tk.StringVar(value="SB_DOP")
         self._dim_labels    = []   # Labels mit fg_dim (grau)
         self._accent_labels = []   # Labels mit accent (blau)
@@ -1228,8 +1229,14 @@ class GDWHApp(tk.Tk):
         self._progress_frame.pack_forget()
         if success:
             self._log("\n✓  Import erfolgreich abgeschlossen.\n")
+            if self._pending_archive:
+                p = self._pending_archive
+                self._write_archive_log(p["gds"], p["area"], p["line_id"],
+                                        auftragstyp=p["auftragstyp"])
+            self._pending_archive = None
             messagebox.showinfo("Fertig", "Import erfolgreich abgeschlossen!", parent=self)
         else:
+            self._pending_archive = None
             self._log("\n✗  Import fehlgeschlagen oder abgebrochen.\n")
         if self._log_file:
             try:
@@ -1403,9 +1410,13 @@ class GDWHApp(tk.Tk):
             self._log_file = None
             print(f"[WARNUNG] Logdatei konnte nicht erstellt werden: {e}")
 
-        # Fortlaufendes Archiv-Log erweitern: {GDS}_{AREA}_{Line_ID} = {STAC-Link}
-        self._write_archive_log(gds, area_s, line_s,
-                                auftragstyp=meta.get("Auftragstyp", ""))
+        # Archiv-Log-Parameter merken – Eintrag wird erst nach erfolgreichem Abschluss geschrieben
+        self._pending_archive = {
+            "gds":         gds,
+            "area":        area_s,
+            "line_id":     line_s,
+            "auftragstyp": meta.get("Auftragstyp", ""),
+        }
 
         self._log(f"=== GDWH Import gestartet – GDS: {gds} ===\n\n")
 
