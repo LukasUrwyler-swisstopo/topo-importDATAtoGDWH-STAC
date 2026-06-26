@@ -2,6 +2,7 @@ print("\nVersion GDS_DOP_16: 16BIT , 2.0.0 (Remove FlightYear/ResolutionOfOrigin
 
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 import hashlib
 import shutil
@@ -21,6 +22,28 @@ log_file = None
 
 def log(message):
     print(message)
+
+def copy_with_retry(src, dst, retries=3, wait=15):
+    """Kopiert src nach dst mit Retry-Logik und Dateigrössen-Verifikation.
+    Bei Fehler: partielle Zieldatei löschen, warten, nochmal versuchen.
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            shutil.copy2(src, dst)
+            if os.path.getsize(src) != os.path.getsize(dst):
+                raise IOError(f"Dateigrösse stimmt nicht überein: {os.path.basename(dst)}")
+            return
+        except Exception as e:
+            log(f"  [Kopieren Versuch {attempt}/{retries}] Fehler: {e}")
+            try:
+                os.remove(dst)
+            except Exception:
+                pass
+            if attempt < retries:
+                log(f"  Warte {wait}s, dann nochmal…")
+                time.sleep(wait)
+            else:
+                raise
 
 # ****************************** Helper Functions ******************************
 
@@ -343,7 +366,7 @@ def create_and_copy_order(output_path, input_path, GDS):
         if os.path.isfile(source_file):
             dst = os.path.join(new_order_path, file_name)
             try:
-                shutil.copy(source_file, dst)
+                copy_with_retry(source_file, dst)
                 nb += 1
                 log(f"Datei {nb} kopiert: {file_name}")
             except Exception as e:
