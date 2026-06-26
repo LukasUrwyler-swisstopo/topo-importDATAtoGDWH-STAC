@@ -320,7 +320,7 @@ def preview_xml_attributes(src, GDS, meta_info):
         sys.exit(0)
 
 # ****************************** XML Creation ******************************
-def create_xml(file_path, GDS, meta_info):
+def create_xml(file_path, GDS, meta_info, cached_raster_attrs=None):
     filename = os.path.basename(file_path)
 
     # AREA: robust aus Dateiname extrahieren
@@ -368,7 +368,8 @@ def create_xml(file_path, GDS, meta_info):
         ET.SubElement(root, "BandID").text = first_line[9:13]
 
     if file_path.lower().endswith(('.tif', '.tiff')):
-        for k, v in get_raster_attributes(file_path).items():
+        attrs = cached_raster_attrs if cached_raster_attrs is not None else get_raster_attributes(file_path)
+        for k, v in attrs.items():
             ET.SubElement(root, k).text = v
     elif file_path.lower().endswith('.laz'):
         # Year aus Line_ID ableiten (erste 4 Ziffern = Jahr)
@@ -528,11 +529,20 @@ def files_in_order(src, out, GDS, meta):
         and fn.lower().endswith(('.tif', '.tiff', '.laz'))
     ]
 
+    # Für Kacheldatensätze: Raster-Attribute nur einmal lesen und für alle XML wiederverwenden.
+    # SB_DSM muss weiterhin jede Datei einzeln öffnen (unterschiedliche Dimensionen/Typen).
+    cached_attrs = None
+    if GDS in ["SB_DOP", "SB_DOP_16"] and files:
+        first_tif = next((fn for fn in files if fn.lower().endswith(('.tif', '.tiff'))), None)
+        if first_tif:
+            cached_attrs = get_raster_attributes(os.path.join(src, first_tif))
+            log(f"Raster-Attribute aus '{first_tif}' gecacht (gilt für alle {len(files)} XML).\n")
+
     for i, fn in enumerate(files, 1):
         fp = os.path.join(src, fn)
         log(f"[{i}/{len(files)}] Verarbeite: {fn}")
         try:
-            create_xml(fp, GDS, meta)
+            create_xml(fp, GDS, meta, cached_raster_attrs=cached_attrs)
             update_file_csv(out, fp, GDS)
         except Exception as e:
             # OPT: Vollständiger Traceback im Log für einfacheres Debugging

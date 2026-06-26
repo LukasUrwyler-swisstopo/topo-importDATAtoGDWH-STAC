@@ -243,7 +243,7 @@ def preview_xml_attributes(src, meta_info):
 
 # ****************************** XML & CSV Functions ******************************
 
-def create_xml(file_path, GDS, meta_info):
+def create_xml(file_path, GDS, meta_info, cached_raster_attrs=None):
     filename = os.path.basename(file_path)
 
     # AREA: robust aus Dateiname extrahieren (zwischen Jahr und _DOP)
@@ -294,7 +294,7 @@ def create_xml(file_path, GDS, meta_info):
 
     # Raster-Attribute
     if file_path.lower().endswith(('.tif', '.tiff')):
-        attrs = get_raster_attributes(file_path)
+        attrs = cached_raster_attrs if cached_raster_attrs is not None else get_raster_attributes(file_path)
         for k, v in attrs.items():
             ET.SubElement(root, k).text = v
 
@@ -338,15 +338,25 @@ def files_in_order(path, output_path, GDS, meta_info):
     # Output-Verzeichnis sicherstellen — update_file_csv schreibt CSV direkt hinein
     os.makedirs(output_path, exist_ok=True)
 
-    for fn in sorted(os.listdir(path)):
+    all_files = sorted(fn for fn in os.listdir(path)
+                       if os.path.isfile(os.path.join(path, fn))
+                       and fn.lower().endswith(('.tif', '.tiff', '.las', '.laz')))
+
+    # Raster-Attribute nur einmal aus erster Datei lesen (alle Kacheln gleich gross)
+    cached_attrs = None
+    first_tif = next((fn for fn in all_files if fn.lower().endswith(('.tif', '.tiff'))), None)
+    if first_tif:
+        cached_attrs = get_raster_attributes(os.path.join(path, first_tif))
+        log(f"Raster-Attribute aus '{first_tif}' gecacht (gilt für alle {len(all_files)} XML).\n")
+
+    for fn in all_files:
         full_file_path = os.path.join(path, fn)
-        if os.path.isfile(full_file_path) and fn.lower().endswith(('.tif', '.tiff', '.las', '.laz')):
-            log(f"Verarbeite Datei: {fn}")
-            try:
-                create_xml(full_file_path, GDS, meta_info)
-                update_file_csv(output_path, full_file_path, GDS)
-            except Exception as e:
-                log(f"Fehler bei Datei {fn}: {e}")
+        log(f"Verarbeite Datei: {fn}")
+        try:
+            create_xml(full_file_path, GDS, meta_info, cached_raster_attrs=cached_attrs)
+            update_file_csv(output_path, full_file_path, GDS)
+        except Exception as e:
+            log(f"Fehler bei Datei {fn}: {e}")
 
 def create_and_copy_order(output_path, input_path, GDS):
     new_order_path = os.path.join(output_path, 'NV')
