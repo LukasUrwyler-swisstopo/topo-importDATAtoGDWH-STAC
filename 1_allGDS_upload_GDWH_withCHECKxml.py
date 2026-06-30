@@ -4,6 +4,7 @@ import os
 import re
 import hashlib
 import shutil
+import time
 import traceback
 from osgeo import gdal
 import xml.etree.ElementTree as ET
@@ -20,6 +21,28 @@ log_file = None
 
 def log(message):
     print(message)
+
+def copy_with_retry(src, dst, retries=3, wait=15):
+    """Kopiert src nach dst mit Retry-Logik und Dateigrössen-Verifikation.
+    Bei Fehler: partielle Zieldatei löschen, warten, nochmal versuchen.
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            shutil.copy2(src, dst)
+            if os.path.getsize(src) != os.path.getsize(dst):
+                raise IOError(f"Dateigrösse stimmt nicht überein: {os.path.basename(dst)}")
+            return
+        except Exception as e:
+            log(f"  [Kopieren Versuch {attempt}/{retries}] Fehler: {e}")
+            try:
+                os.remove(dst)
+            except Exception:
+                pass
+            if attempt < retries:
+                log(f"  Warte {wait}s, dann nochmal…")
+                time.sleep(wait)
+            else:
+                raise
 
 # ****************************** Helper ******************************
 def calculate_md5(file_path):
@@ -297,7 +320,7 @@ def preview_xml_attributes(src, GDS, meta_info):
         sys.exit(0)
 
 # ****************************** XML Creation ******************************
-def create_xml(file_path, GDS, meta_info):
+def create_xml(file_path, GDS, meta_info, cached_raster_attrs=None):
     filename = os.path.basename(file_path)
 
     # AREA: robust aus Dateiname extrahieren
@@ -345,7 +368,8 @@ def create_xml(file_path, GDS, meta_info):
         ET.SubElement(root, "BandID").text = first_line[9:13]
 
     if file_path.lower().endswith(('.tif', '.tiff')):
-        for k, v in get_raster_attributes(file_path).items():
+        attrs = cached_raster_attrs if cached_raster_attrs is not None else get_raster_attributes(file_path)
+        for k, v in attrs.items():
             ET.SubElement(root, k).text = v
     elif file_path.lower().endswith('.laz'):
         # Year aus Line_ID ableiten (erste 4 Ziffern = Jahr)
@@ -384,8 +408,7 @@ def update_file_csv(output_path, full_file_path, GDS):
         for fext in [ext, ".xml", ".tfw"]:
             src = full_file_path.rsplit('.', 1)[0] + fext
             if os.path.exists(src):
-                # OPT: copy2 statt copy → Datei-Timestamps bleiben erhalten
-                shutil.copy2(src, os.path.join(dst_folder, os.path.basename(src)))
+                copy_with_retry(src, os.path.join(dst_folder, os.path.basename(src)))
         md5 = calculate_md5(full_file_path)
         tilekey = "1000"
         row = f"NV\\{subfolder}\\{name};{md5};{tilekey};add;{wkt_footprint(full_file_path)}"
@@ -399,17 +422,17 @@ def update_file_csv(output_path, full_file_path, GDS):
         # Hauptziel: NV\SB_DSM_PUNKTWOLKE
         dst_nv = os.path.join(output_path, "NV", "SB_DSM_PUNKTWOLKE")
         os.makedirs(dst_nv, exist_ok=True)
-        shutil.copy2(full_file_path, os.path.join(dst_nv, name))
+        copy_with_retry(full_file_path, os.path.join(dst_nv, name))
 
         xml_src = full_file_path.rsplit('.', 1)[0] + ".xml"
         if os.path.exists(xml_src):
-            shutil.copy2(xml_src, os.path.join(dst_nv, os.path.basename(xml_src)))
+            copy_with_retry(xml_src, os.path.join(dst_nv, os.path.basename(xml_src)))
 
         # Zweites Ziel: PrecalculatedFormats\SB_DSM_PUNKTWOLKE
         dst_pre = os.path.join(output_path, "PrecalculatedFormats", "SB_DSM_PUNKTWOLKE")
         os.makedirs(dst_pre, exist_ok=True)
         new_name = f"SB_DSM_PUNKTWOLKE_LAZ_CHLV95_LN02_{tilekey}.laz"
-        shutil.copy2(full_file_path, os.path.join(dst_pre, new_name))
+        copy_with_retry(full_file_path, os.path.join(dst_pre, new_name))
 
         row_nv  = f"NV\\SB_DSM_PUNKTWOLKE\\{name};{md5};{tilekey};add;"
         row_pre = f"PrecalculatedFormats\\SB_DSM_PUNKTWOLKE\\{new_name};{md5};{tilekey};add;"
@@ -436,7 +459,7 @@ def update_file_csv(output_path, full_file_path, GDS):
         if os.path.exists(xml_src):
             nv_path = os.path.join(output_path, "NV")
             os.makedirs(nv_path, exist_ok=True)
-            shutil.copy2(xml_src, os.path.join(nv_path, os.path.basename(xml_src)))
+            copy_with_retry(xml_src, os.path.join(nv_path, os.path.basename(xml_src)))
 
     # === Default ===
     else:
@@ -506,11 +529,20 @@ def files_in_order(src, out, GDS, meta):
         and fn.lower().endswith(('.tif', '.tiff', '.laz'))
     ]
 
+    # Für Kacheldatensätze: Raster-Attribute nur einmal lesen und für alle XML wiederverwenden.
+    # SB_DSM muss weiterhin jede Datei einzeln öffnen (unterschiedliche Dimensionen/Typen).
+    cached_attrs = None
+    if GDS in ["SB_DOP", "SB_DOP_16"] and files:
+        first_tif = next((fn for fn in files if fn.lower().endswith(('.tif', '.tiff'))), None)
+        if first_tif:
+            cached_attrs = get_raster_attributes(os.path.join(src, first_tif))
+            log(f"Raster-Attribute aus '{first_tif}' gecacht (gilt für alle {len(files)} XML).\n")
+
     for i, fn in enumerate(files, 1):
         fp = os.path.join(src, fn)
         log(f"[{i}/{len(files)}] Verarbeite: {fn}")
         try:
-            create_xml(fp, GDS, meta)
+            create_xml(fp, GDS, meta, cached_raster_attrs=cached_attrs)
             update_file_csv(out, fp, GDS)
         except Exception as e:
             # OPT: Vollständiger Traceback im Log für einfacheres Debugging
@@ -535,8 +567,7 @@ def create_and_copy_order(out, src, GDS):
         os.makedirs(nv_path, exist_ok=True)
         for fn in os.listdir(src):
             if fn.lower().endswith(('.tif', '.tfw')):
-                # OPT: copy2 statt copy → Datei-Timestamps bleiben erhalten
-                shutil.copy2(os.path.join(src, fn), os.path.join(nv_path, fn))
+                copy_with_retry(os.path.join(src, fn), os.path.join(nv_path, fn))
         log("DOP-Dateien kopiert.\n")
 
 # ****************************** Working Part ******************************

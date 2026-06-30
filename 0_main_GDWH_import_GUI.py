@@ -1,5 +1,5 @@
 """
-0_main_GDWH_import_GUI.py  –  GDWH Import GUI
+0_main_GDWH_import_GUI.py  –  GDWH(Bucket) Import GUI
 Tkinter-Oberfläche für den GDWH-Import.
 Steuert die Sub-Scripts 1, 2_1 und 2_2 je nach gewähltem GDS.
 """
@@ -1354,7 +1354,7 @@ class GDWHApp(tk.Tk):
             stamp     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             stac_dt   = self._format_stac_datetime(line_id)
             stac_link = (
-                "https://sys-data.int.bgdi.ch/#/collections/"
+                "https://data.geo.admin.ch/browser/index.html#/collections/"
                 "ch.swisstopo.spezialbefliegungen/items/"
                 f"{auftragstyp}-{stac_dt}"
             )
