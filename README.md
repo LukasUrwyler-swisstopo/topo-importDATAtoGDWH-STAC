@@ -107,7 +107,7 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 |-----------|-------------|----------------|
 | `Auftragstyp` | Art des Auftrags | `kry` / `ram` / `bim` / `mom` / `wam` |
 | `CustomAttribute` | Beschreibung des Datenprodukts | siehe Auswahlliste |
-| `Line_ID` | Befliegungslinien-IDs | `["YYYYMMDD_HHMM_QQQQQ", ...]` – erste ID = frühste Linie |
+| `Line_ID` | Befliegungslinien-IDs | `["YYYYMMDD_HHMM_QQQQQ", ...]` – wird von der GUI automatisch chronologisch sortiert (älteste zuoberst) |
 | `allAreaLineIDs` | Alle LineIDs des Gebiets *(nur SB_DOP_16)* | `["YYYYMMDD_HHMM_QQQQQ", ...]` |
 | `NoData` | NoData-Wert | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
 | `TerrainModel` | Verwendetes Geländemodell | siehe Auswahlliste |
@@ -212,8 +212,8 @@ python -m pytest test_functions.py -v   # falls pytest installiert
 ## Hinweise
 
 **Line_IDs**
-- Die erste `Line_ID` **muss** die frühste Befliegungslinie (frühester Aufnahmezeitpunkt) des AOIs sein – sie bestimmt `FirstAcquisitionTime` und `StacItemIdDatetime`. (ausgenommen SB_DOP_16, siehe weiter unten*)
-- Mehrere LineIDs auf einmal eingeben: Spalte in Excel markieren → Ctrl+C → ins LineID-Feld klicken → Ctrl+V (jede Zeile wird einzeln validiert).
+- Die erste `Line_ID` bestimmt `FirstAcquisitionTime` und `StacItemIdDatetime` und muss daher die frühste Befliegungslinie (frühester Aufnahmezeitpunkt) des AOIs sein. Die GUI sortiert eingegebene/eingefügte Line_IDs automatisch chronologisch (älteste zuoberst) – manuelles Sortieren vor dem Einfügen ist nicht mehr nötig. (ausgenommen SB_DOP_16, siehe weiter unten*)
+- Mehrere LineIDs auf einmal eingeben: Spalte in Excel markieren → Ctrl+C → ins LineID-Feld klicken → Ctrl+V (jede Zeile wird einzeln validiert und die Liste automatisch neu sortiert).
 - *Bei `SB_DOP_16` ist genau **eine** Line_ID erlaubt; alle Fluglinien des Gebiets kommen separat ins Feld `allAreaLineIDs`.
 
 **Pfade**

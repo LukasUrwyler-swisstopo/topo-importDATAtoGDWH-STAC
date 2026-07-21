@@ -279,6 +279,7 @@ class LineIDWidget(ttk.LabelFrame):
             messagebox.showwarning("Duplikat", f"Bereits erfasst: {val}", parent=self)
             return False
         self.lb.insert("end", val)
+        self._resort()
         return True
 
     def _add(self):
@@ -317,6 +318,8 @@ class LineIDWidget(ttk.LabelFrame):
                 self.lb.insert("end", line)
                 existing.add(line)
                 added.append(line)
+        if added:
+            self._resort()
         if skipped:
             messagebox.showwarning(
                 "Mehrfacheingabe – Warnung",
@@ -330,6 +333,17 @@ class LineIDWidget(ttk.LabelFrame):
     def _remove(self):
         for i in reversed(self.lb.curselection()):
             self.lb.delete(i)
+
+    def _resort(self):
+        """Sortiert die Liste chronologisch, älteste zuoberst.
+
+        Format YYYYMMDD_HHMM_QQQQQ ist fest breit/nullgepadded, daher
+        entspricht eine String-Sortierung bereits der Datumssortierung.
+        """
+        ids = sorted(self.lb.get(0, "end"))
+        self.lb.delete(0, "end")
+        for i in ids:
+            self.lb.insert("end", i)
 
     def get_ids(self):
         return list(self.lb.get(0, "end"))
@@ -524,8 +538,6 @@ class SicherheitsCheckDialog(tk.Toplevel):
                 "Ist der Input Folder der korrekte Pfad zum DOP-Mosaik, "
                 "welches importiert werden soll?",
                 "Sind die Line_IDs korrekt?",
-                "Ist die erste aufgelistete Line_ID auch die erste Line_ID "
-                "der beflogenen AREA / AOI?",
                 "Sind die NoData-Werte korrekt? (8BIT, 3-Band: schwarze "
                 "Background-Pixel = 0 0 0  /  weisse = 255 255 255)   "
                 "Vorgängig visuell kontrollieren (ApplicationsMaster / ArcGIS / QGIS).",
