@@ -48,6 +48,34 @@ NODATA_D16_OPT = ["0 0 0 0   (schwarz, 16BIT NRGB)", "65535 65535 65535 65535   
 NODATA_D16_VAL = ["0 0 0 0",                          "65535 65535 65535 65535"]
 LINE_ID_PAT    = re.compile(r'^\d{8}_\d{4}_\d{5}$')
 
+# ─── Dateinamen-Konvention pro GDS (Button "Check - NameFormat") ──────────────
+NAME_FORMAT_SPECS = {
+    "SB_DOP": {
+        "extensions": (".tif", ".tiff", ".tfw"),
+        "regexes": [re.compile(r'^20\d{2}_.+_DOP_.*\d{4}_\d{4}_LV95\.(tif|tiff|tfw)$', re.IGNORECASE)],
+        "example":  "202X_AREANAME_DOP_..._XXXX_YYYY_LV95.tif / .tfw",
+    },
+    "SB_DOP_16": {
+        "extensions": (".tif", ".tiff", ".tfw"),
+        "regexes": [re.compile(r'^20\d{2}_.+_DOP_.*\d{4}_\d{4}_LV95\.(tif|tiff|tfw)$', re.IGNORECASE)],
+        "example":  "202X_AREANAME_DOP_..._XXXX_YYYY_LV95.tif / .tfw",
+    },
+    "SB_DSM": {
+        "extensions": (".tif", ".tiff", ".tfw"),
+        "regexes": [
+            re.compile(r'^20\d{2}_.+_DSM_.*_LV95_LN02\.(tif|tiff|tfw)$', re.IGNORECASE),
+            re.compile(r'^20\d{2}_.+_hillshade_.*_LV95_LN02\.(tif|tiff)$', re.IGNORECASE),
+        ],
+        "example":  "202X_AREANAME_DSM_..._LV95_LN02.tif / .tfw  und/oder  "
+                    "202X_AREANAME_hillshade_..._LV95_LN02.tif",
+    },
+    "SB_DSM_PUNKTWOLKE": {
+        "extensions": (".laz",),
+        "regexes": [re.compile(r'^20\d{2}_.+_TIN_.*\d{4}_\d{4}_LV95_LN02\.laz$', re.IGNORECASE)],
+        "example":  "202X_AREANAME_TIN_..._XXXX_YYYY_LV95_LN02.laz",
+    },
+}
+
 # ─── Farbpaletten ─────────────────────────────────────────────────────────────
 LIGHT = {
     "root":      "#f0f0f0",
@@ -338,7 +366,8 @@ class SicherheitsCheckDialog(tk.Toplevel):
         "skip": ("#f5f5f5", "#757575"),
     }
 
-    def __init__(self, parent, gds, meta, quelle, ziel, area="", stac_dt="", dark=True):
+    def __init__(self, parent, gds, meta, quelle, ziel, area="", stac_dt="",
+                 tilekey="", tilekey_file="", dark=True):
         super().__init__(parent)
         self.result = False
         self._dark = dark
@@ -445,6 +474,7 @@ class SicherheitsCheckDialog(tk.Toplevel):
         sec1 = _section("METADATEN")
         _kv(sec1, "GDS:", gds)
         _kv(sec1, "Area:", area)
+        _kv(sec1, "TileKey (1. Tile):", f"{tilekey}   (aus: {tilekey_file})")
         _kv(sec1, "STAC ITEM - Name:", stac_dt)
         _kv(sec1, "Auftragstyp:", meta.get("Auftragstyp", ""))
         _kv(sec1, "CustomAttribute:", meta.get("CustomAttribute", ""))
@@ -638,6 +668,7 @@ class GDWHApp(tk.Tk):
         self._dim_labels    = []   # Labels mit fg_dim (grau)
         self._accent_labels = []   # Labels mit accent (blau)
         self._hint_labels   = []   # Labels mit hint (amber) für Info-Hinweise
+        self._check_format_btns = []   # "Check - NameFormat"-Buttons (amber/grün/rot)
         self._osgeo_python  = _detect_osgeo_python()
         self._osgeo_lbl     = None
         self._osgeo_status  = None
@@ -859,6 +890,12 @@ class GDWHApp(tk.Tk):
         ttk.Button(self.if_frame, text="Ordner…",
                     command=lambda: self._browse(self.if_var)
                     ).grid(row=0, column=2, pady=3)
+        self.if_checkbtn = tk.Button(self.if_frame, text="Check - NameFormat",
+                    relief="flat", cursor="hand2",
+                    command=lambda: self._check_name_format(self.if_var, self.if_checkbtn))
+        self.if_checkbtn.grid(row=0, column=3, padx=(4, 0), pady=3)
+        self._check_format_btns.append(self.if_checkbtn)
+        self.if_var.trace_add("write", lambda *_: self._reset_check_btn(self.if_checkbtn))
         self.if_hint = ttk.Label(self.if_frame, font=("", 8),
             text="Data-Input Path wird automatisch ergänzt:  INPUT_FOLDER\\<HHMM der Line_ID>")
         self.if_hint.grid(row=1, column=1, sticky="w", padx=(8, 0))
@@ -875,6 +912,12 @@ class GDWHApp(tk.Tk):
         ttk.Button(self.quelle_frame, text="Ordner…",
                     command=lambda: self._browse(self.quelle_var)
                     ).grid(row=0, column=2, pady=3)
+        self.quelle_checkbtn = tk.Button(self.quelle_frame, text="Check - NameFormat",
+                    relief="flat", cursor="hand2",
+                    command=lambda: self._check_name_format(self.quelle_var, self.quelle_checkbtn))
+        self.quelle_checkbtn.grid(row=0, column=3, padx=(4, 0), pady=3)
+        self._check_format_btns.append(self.quelle_checkbtn)
+        self.quelle_var.trace_add("write", lambda *_: self._reset_check_btn(self.quelle_checkbtn))
         self.quelle_hint = ttk.Label(self.quelle_frame, font=("", 8))
         self.quelle_hint.grid(row=1, column=1, sticky="w", padx=(8, 0))
         self._dim_labels.append(self.quelle_hint)
@@ -1031,6 +1074,11 @@ class GDWHApp(tk.Tk):
             try: lbl.configure(foreground=T["hint"])
             except tk.TclError: pass
 
+        # "Check - NameFormat"-Buttons: aktuellen Status (amber/grün/rot) neu einfärben
+        for btn in self._check_format_btns:
+            try: self._set_check_btn_state(btn, getattr(btn, "_check_state", "idle"))
+            except tk.TclError: pass
+
         self._set_titlebar_dark(dark)
 
     # ── OSGeo4W Python Verwaltung ─────────────────────────────────────────────
@@ -1103,6 +1151,11 @@ class GDWHApp(tk.Tk):
         self.quelle_frame.grid_remove() if is_d16 else self.quelle_frame.grid()
         self.quelle_hint.config(text="Ordner mit TIF- / LAZ-Quelldateien")
 
+        # GDS gewechselt -> alte Check-Ergebnisse sind hinfällig
+        if hasattr(self, "if_checkbtn"):
+            self._reset_check_btn(self.if_checkbtn)
+            self._reset_check_btn(self.quelle_checkbtn)
+
         # Theme für die neu sichtbaren Widgets aktualisieren
         if hasattr(self, "_dark"):
             T = DARK if self._dark else LIGHT
@@ -1115,6 +1168,81 @@ class GDWHApp(tk.Tk):
             for lbl in self._hint_labels:
                 try: lbl.configure(foreground=T["hint"])
                 except tk.TclError: pass
+
+    # ── Check - NameFormat ───────────────────────────────────────────────────
+    def _set_check_btn_state(self, btn, state):
+        """state: 'idle' (amber), 'ok' (grün) oder 'err' (rot)."""
+        btn._check_state = state
+        T = DARK if self._dark else LIGHT
+        color = {"idle": T["hint"], "ok": T["ok"], "err": T["err"]}[state]
+        btn.configure(fg=color, activeforeground=color,
+                       bg=T["btn"], activebackground=T["btn_hover"])
+
+    def _reset_check_btn(self, btn):
+        self._set_check_btn_state(btn, "idle")
+
+    def _check_name_format(self, path_var, btn):
+        """Prüft die ersten (max. 2) passenden Dateien im Quellordner gegen die
+        GDS-spezifische Namenskonvention (siehe NAME_FORMAT_SPECS)."""
+        gds  = self.gds_var.get()
+        spec = NAME_FORMAT_SPECS.get(gds)
+        src  = path_var.get().strip().strip('"')
+
+        if not spec:
+            messagebox.showerror("Check - NameFormat",
+                f"Kein Namensformat für GDS '{gds}' hinterlegt.", parent=self)
+            self._set_check_btn_state(btn, "err")
+            return
+        if not os.path.isdir(src):
+            messagebox.showerror("Check - NameFormat",
+                f"Quellordner nicht gefunden:\n  {src}", parent=self)
+            self._set_check_btn_state(btn, "err")
+            return
+
+        exts = spec["extensions"]
+        candidates = []
+        try:
+            for fn in sorted(os.listdir(src)):
+                if fn.lower().endswith(exts):
+                    candidates.append(fn)
+                if len(candidates) >= 2:
+                    break
+            if not candidates:
+                # Eine Ebene tiefer (z.B. SB_DOP_16 vor Reorganisation)
+                for sub in sorted(os.listdir(src)):
+                    sub_path = os.path.join(src, sub)
+                    if os.path.isdir(sub_path):
+                        for fn in sorted(os.listdir(sub_path)):
+                            if fn.lower().endswith(exts):
+                                candidates.append(fn)
+                            if len(candidates) >= 2:
+                                break
+                    if len(candidates) >= 2:
+                        break
+        except Exception as e:
+            messagebox.showerror("Check - NameFormat",
+                f"Fehler beim Lesen des Ordners:\n  {e}", parent=self)
+            self._set_check_btn_state(btn, "err")
+            return
+
+        if not candidates:
+            messagebox.showerror("Check - NameFormat",
+                f"Keine passende Datei ({', '.join(exts)}) im Quellordner gefunden.",
+                parent=self)
+            self._set_check_btn_state(btn, "err")
+            return
+
+        bad = [fn for fn in candidates if not any(rx.match(fn) for rx in spec["regexes"])]
+        if bad:
+            messagebox.showerror("Check - NameFormat",
+                "Die Namenskonvention ist im falschen Format:\n\n"
+                + "\n".join(f"  • {fn}" for fn in bad)
+                + f"\n\nErwartetes Format ({gds}):\n  {spec['example']}",
+                parent=self)
+            self._set_check_btn_state(btn, "err")
+            return
+
+        self._set_check_btn_state(btn, "ok")
 
     # ── Ordner-Dialog ─────────────────────────────────────────────────────────
     def _browse(self, var, must_exist=True):
@@ -1332,6 +1460,45 @@ class GDWHApp(tk.Tk):
         return "—  (keine passende Datei gefunden)"
 
     @staticmethod
+    def _extract_tilekey_from_filename(filename, gds):
+        """Identische Logik wie extract_tile()/extract_tile_lv95() in den Sub-Scripts
+        (zwei Namensteile direkt vor 'LV95', z.B. ..._2601_1136_LV95_LN02.laz -> '2601_1136')."""
+        if gds == "SB_DSM":
+            return "1000  (fix für SB_DSM)"
+        parts = filename.rsplit('.', 1)[0].split('_')
+        if "LV95" not in parts:
+            return "NICHT GEFUNDEN – 'LV95' fehlt im Dateinamen!"
+        idx = parts.index("LV95")
+        if idx < 2:
+            return f"FEHLER – 'LV95' steht zu früh (Position {idx})"
+        return parts[idx - 2] + "_" + parts[idx - 1]
+
+    @staticmethod
+    def _extract_tilekey_from_source(src_folder, gds):
+        """TileKey aus erstem passenden Dateinamen im Quellordner (inkl. 1 Unterebene).
+
+        Gibt (tilekey, dateiname) zurück, damit im Sicherheitscheck ersichtlich ist,
+        aus welcher Datei der TileKey abgeleitet wurde (Kontrolle der Namenskonvention).
+        """
+        extensions = ('.tif', '.tiff', '.laz')
+        if not os.path.isdir(src_folder):
+            return "—", "(Ordner nicht gefunden)"
+        try:
+            for fn in sorted(os.listdir(src_folder)):
+                if fn.lower().endswith(extensions):
+                    return GDWHApp._extract_tilekey_from_filename(fn, gds), fn
+            # Eine Ebene tiefer (SB_DOP_16 vor/nach Reorganisation)
+            for sub in sorted(os.listdir(src_folder)):
+                sub_path = os.path.join(src_folder, sub)
+                if os.path.isdir(sub_path):
+                    for fn in sorted(os.listdir(sub_path)):
+                        if fn.lower().endswith(extensions):
+                            return GDWHApp._extract_tilekey_from_filename(fn, gds), fn
+        except Exception:
+            pass
+        return "—", "(keine passende Datei gefunden)"
+
+    @staticmethod
     def _format_stac_datetime(line_id):
         """YYYYMMDD_HHMM_... → YYYY-MM-DDtHHMM0000  (identisch zu Sub-Script-Logik)"""
         if line_id and len(line_id) >= 13:
@@ -1395,10 +1562,12 @@ class GDWHApp(tk.Tk):
 
         # Sicherheitscheck
         _first_lid = meta.get("Line_ID", [""])[0]
+        _tilekey, _tilekey_file = self._extract_tilekey_from_source(quelle, gds)
         dlg = SicherheitsCheckDialog(
             self, gds, meta, quelle_display, ziel,
             area=self._extract_area_from_source(quelle, gds),
             stac_dt=self._format_stac_datetime(_first_lid),
+            tilekey=_tilekey, tilekey_file=_tilekey_file,
             dark=self._dark,
         )
         if not dlg.wait():
