@@ -7,7 +7,7 @@ Steuert die Sub-Scripts 1, 2_1 und 2_2 je nach gewähltem GDS.
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 import sys, os, re, threading, importlib.util, io, queue, builtins, traceback
-import subprocess, json, tempfile, ctypes
+import subprocess, json, tempfile, ctypes, webbrowser
 from datetime import datetime
 
 # ─── Sub-Script Pfade ─────────────────────────────────────────────────────────
@@ -33,6 +33,14 @@ GDS_CUSTOM_ATTR = {
     "SB_DOP_16":         "Digital OrthoPhoto - (ADS Line) NRGB 16BIT",
     "SB_DSM":            "Digital Surface Model  - Raster Mosaic (DSM photogrammetric autocorrelation)",
     "SB_DSM_PUNKTWOLKE": "Digital Surface Model - PointCloud LAZ (DSM photogrammetric autocorrelation)",
+}
+
+# GDWH-Catalog-Import-Link je GDS (für Hinweis-Dialog nach erfolgreicher Prozessierung)
+CATALOG_LINKS = {
+    "SB_DOP":            "https://ltgdwh.adr.admin.ch/catalog-ng/catalog/SB_DOP/import",
+    "SB_DOP_16":         "https://ltgdwh.adr.admin.ch/catalog-ng/catalog/SB_DOP_16/import",
+    "SB_DSM":            "https://ltgdwh.adr.admin.ch/catalog-ng/catalog/SB_DSM/import",
+    "SB_DSM_PUNKTWOLKE": "https://ltgdwh.adr.admin.ch/catalog-ng/catalog/SB_DSM_PUNKTWOLKE/import",
 }
 
 AUFTRAGSTYPEN  = ["kry", "ram", "bim", "mom", "wam"]
@@ -658,6 +666,120 @@ class SicherheitsCheckDialog(tk.Toplevel):
         return self.result
 
 
+class ImportDoneDialog(tk.Toplevel):
+    """Hinweis-Dialog nach erfolgreicher Prozessierung – GDS-spezifischer GDWH-Catalog-Link
+    und die nächsten Schritte für den manuellen GDWH-Import."""
+
+    def __init__(self, parent, gds, ordner_name, dark=True):
+        super().__init__(parent)
+        self._dark = dark
+        T = DARK if dark else LIGHT
+        self._link = CATALOG_LINKS.get(gds, "")
+
+        self.title("Prozessierung abgeschlossen")
+        self.resizable(False, False)
+        self.configure(bg=T["root"])
+        self.grab_set()
+        self.focus_set()
+
+        hdr = tk.Frame(self, bg=T["hdr_bg"])
+        hdr.pack(side="top", fill="x")
+        tk.Label(hdr, text="  ✓  Prozessierung erfolgreich abgeschlossen",
+                 font=("Segoe UI", 11, "bold"),
+                 bg=T["hdr_bg"], fg=T["hdr_fg"]).pack(side="left", pady=10)
+
+        body = tk.Frame(self, bg=T["root"])
+        body.pack(fill="both", expand=True, padx=16, pady=(12, 4))
+
+        tk.Label(body,
+                 text="Die Daten wurden für den GDWH-Import vorbereitet und sind nun "
+                      "bereit für den Import im GDWH-Catalog.",
+                 font=("Segoe UI", 9),
+                 bg=T["root"], fg=T["fg"], anchor="w", justify="left",
+                 wraplength=560).pack(fill="x", pady=(0, 10))
+
+        steps = [
+            "1.  Öffne den GDWH-Catalog (Button unten).",
+            f"2.  Navigiere zum Datenpaket:",
+            "3.  Führe zuerst den CHECK des Datenpakets aus.",
+            "4.  Wenn CHECK-OK, starte den Import des Datenpakets.",
+        ]
+        for s in steps:
+            tk.Label(body, text=s, font=("Segoe UI", 9),
+                     bg=T["root"], fg=T["fg"], anchor="w", justify="left",
+                     wraplength=560).pack(fill="x", pady=1)
+            if s.startswith("2."):
+                tk.Label(body, text=ordner_name or "–",
+                         font=("Courier New", 9, "bold"),
+                         bg=T["panel"], fg=T["accent"],
+                         anchor="w", padx=8, pady=5).pack(fill="x", pady=(2, 6))
+
+        tk.Frame(body, height=1, bg=T["sep"]).pack(fill="x", pady=(6, 8))
+
+        tk.Label(body,
+                 text="Per Mail wird eine Bestätigung zugestellt (import successful/failed).\n"
+                      "Bei der Meldung \"successfully\" ist der Import nach GDWH und STAC abgeschlossen.",
+                 font=("Segoe UI", 9), fg=T["fg_dim"], bg=T["root"],
+                 anchor="w", justify="left", wraplength=560).pack(fill="x")
+
+        tk.Frame(self, height=1, bg=T["sep"]).pack(side="bottom", fill="x")
+        btn_row = tk.Frame(self, bg=T["root"])
+        btn_row.pack(side="bottom", fill="x", padx=14, pady=10)
+
+        tk.Button(btn_row, text="Schliessen",
+                  font=("Segoe UI", 10),
+                  bg=T["btn"], fg=T["fg"],
+                  activebackground=T["btn_hover"], activeforeground=T["fg"],
+                  relief="flat", padx=14, pady=7, cursor="hand2",
+                  command=self._on_close).pack(side="right")
+
+        if self._link:
+            tk.Button(btn_row, text="GDWH-Catalog öffnen",
+                      font=("Segoe UI", 10, "bold"),
+                      bg="#005fa3" if dark else "#0063b1", fg="#ffffff",
+                      activebackground=T["sel_bg"], activeforeground="#ffffff",
+                      relief="flat", padx=14, pady=7, cursor="hand2",
+                      command=self._open_link).pack(side="right", padx=(0, 10))
+
+        self.update_idletasks()
+        w = 600
+        h = self.winfo_reqheight() + 20
+        px = parent.winfo_rootx() + parent.winfo_width() // 2 - w // 2
+        py = parent.winfo_rooty() + parent.winfo_height() // 2 - h // 2
+        self.geometry(f"{w}x{h}+{max(0, px)}+{max(0, py)}")
+
+        self._set_titlebar_dark(dark)
+        self.bind("<Escape>", lambda _: self._on_close())
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _open_link(self):
+        try:
+            webbrowser.open(self._link)
+        except Exception:
+            pass
+
+    def _set_titlebar_dark(self, dark):
+        if not self.winfo_ismapped():
+            self.after(50, lambda: self._set_titlebar_dark(dark))
+            return
+        try:
+            hwnd  = int(self.wm_frame(), 16)
+            value = ctypes.c_int(1 if dark else 0)
+            for attr in (20, 19):
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+                    break
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
+        except Exception:
+            pass
+
+    def _on_close(self):
+        self.destroy()
+
+    def wait(self):
+        self.wait_window()
+
+
 # ─── Haupt-App ────────────────────────────────────────────────────────────────
 class GDWHApp(tk.Tk):
 
@@ -675,6 +797,7 @@ class GDWHApp(tk.Tk):
         self._log_q           = queue.Queue()
         self._log_file        = None
         self._pending_archive = None
+        self._pending_ziel     = None
         self._log_visible     = False
         self.gds_var        = tk.StringVar(value="SB_DOP")
         self._dim_labels    = []   # Labels mit fg_dim (grau)
@@ -1386,14 +1509,19 @@ class GDWHApp(tk.Tk):
         self._progress_frame.pack_forget()
         if success:
             self._log("\n✓  Import erfolgreich abgeschlossen.\n")
+            gds  = self._pending_archive["gds"] if self._pending_archive else self.gds_var.get()
+            ziel = self._pending_ziel or ""
             if self._pending_archive:
                 p = self._pending_archive
                 self._write_archive_log(p["gds"], p["area"], p["line_id"],
                                         auftragstyp=p["auftragstyp"])
             self._pending_archive = None
-            messagebox.showinfo("Fertig", "Import erfolgreich abgeschlossen!", parent=self)
+            self._pending_ziel    = None
+            ordner_name = os.path.basename(ziel.replace("/", "\\").rstrip("\\")) if ziel else ""
+            ImportDoneDialog(self, gds, ordner_name, dark=self._dark).wait()
         else:
             self._pending_archive = None
+            self._pending_ziel    = None
             self._log("\n✗  Import fehlgeschlagen oder abgebrochen.\n")
         if self._log_file:
             try:
@@ -1615,6 +1743,7 @@ class GDWHApp(tk.Tk):
             "line_id":     line_s,
             "auftragstyp": meta.get("Auftragstyp", ""),
         }
+        self._pending_ziel = ziel
 
         self._log(f"=== GDWH Import gestartet – GDS: {gds} ===\n\n")
 

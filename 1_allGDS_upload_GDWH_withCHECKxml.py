@@ -250,6 +250,36 @@ def get_nodata_value(filename, GDS, meta_info):
             return "-3.4028235e+38"
     return meta_info.get("NoData", "")
 
+def tag_nodata_on_raster(file_path, nodata_str):
+    """
+    Schreibt den NoData-Wert zusaetzlich als echten GDAL-Tag auf jedes Band
+    des TIFF (per SetNoDataValue), statt ihn nur im XML zu vermerken. Ohne
+    diesen Tag fehlt bei einer spaeteren COG-Ableitung im GDWH-Catalog die
+    NoData-Angabe im gdalinfo des Ergebnisses.
+    """
+    values = nodata_str.split()
+    if not values:
+        return
+    ds = gdal.Open(file_path, gdal.GA_Update)
+    if ds is None:
+        log(f"[WARNUNG] NoData-Tag: '{os.path.basename(file_path)}' konnte nicht zum Schreiben geoeffnet werden.")
+        return
+    try:
+        n_bands = ds.RasterCount
+        if len(values) == 1:
+            values = values * n_bands
+        if len(values) != n_bands:
+            log(f"[WARNUNG] NoData-Tag: {len(values)} Wert(e) fuer {n_bands} Baender "
+                f"in '{os.path.basename(file_path)}' - uebersprungen.")
+            return
+        for i in range(1, n_bands + 1):
+            ds.GetRasterBand(i).SetNoDataValue(float(values[i - 1]))
+    except Exception as e:
+        log(f"[WARNUNG] NoData-Tag konnte nicht gesetzt werden fuer '{os.path.basename(file_path)}': {e}")
+    finally:
+        ds.FlushCache()
+        ds = None
+
 # ****************************** Sicherheits-Checker ******************************
 def preview_xml_attributes(src, GDS, meta_info):
     """
@@ -543,6 +573,10 @@ def files_in_order(src, out, GDS, meta):
         log(f"[{i}/{len(files)}] Verarbeite: {fn}")
         try:
             create_xml(fp, GDS, meta, cached_raster_attrs=cached_attrs)
+            if GDS != "SB_DSM_PUNKTWOLKE" and fn.lower().endswith(('.tif', '.tiff')):
+                nodata_str = get_nodata_value(fn, GDS, meta)
+                if nodata_str:
+                    tag_nodata_on_raster(fp, nodata_str)
             update_file_csv(out, fp, GDS)
         except Exception as e:
             # OPT: Vollständiger Traceback im Log für einfacheres Debugging

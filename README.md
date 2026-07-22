@@ -57,6 +57,7 @@ Hauptscript starten  (GUI)
         │
         ├─ Quellordner bereinigen  (nur Nutzdaten behalten – Whitelist pro GDS)
         ├─ XML-Generierung  (pro .tif / .laz)
+        ├─ NoData-Tag im TIFF setzen  (GDAL SetNoDataValue, pro Band – bleibt bei späterer COG-Ableitung erhalten)
         ├─ Daten ins Bucket kopieren  (NV-Ordner; PUNKTWOLKE: +PrecalculatedFormats)
         └─ files.csv erstellen  (MD5-Hash, TileKey, WKT-Footprint)
                 │
@@ -109,7 +110,7 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 | `CustomAttribute` | Beschreibung des Datenprodukts | siehe Auswahlliste |
 | `Line_ID` | Befliegungslinien-IDs | `["YYYYMMDD_HHMM_QQQQQ", ...]` – wird von der GUI automatisch chronologisch sortiert (älteste zuoberst) |
 | `allAreaLineIDs` | Alle LineIDs des Gebiets *(nur SB_DOP_16)* | `["YYYYMMDD_HHMM_QQQQQ", ...]` |
-| `NoData` | NoData-Wert | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
+| `NoData` | NoData-Wert – wird ins XML geschrieben **und** direkt als GDAL-Tag auf jedes Band des TIFF gesetzt (`SetNoDataValue`) | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
 | `TerrainModel` | Verwendetes Geländemodell | siehe Auswahlliste |
 | `SourceReferenceSystem` | Koordinatensystem | `"(EPSG:2056) CH1903+ / LV95_LN02"` *(fix)* |
 | `CameraSystem` | Kamerasystem | `"Leica ADS100"` / `"Leica ADS80"` / `"Leica DMC-4"` |
