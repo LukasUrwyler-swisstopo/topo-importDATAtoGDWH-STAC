@@ -12,10 +12,7 @@ import os
 import sys
 import tempfile
 import unittest
-import unittest.mock
 from unittest.mock import MagicMock
-
-import numpy as np
 
 # ============================================================
 #  osgeo/gdal als Mock registrieren, damit die Scripts ohne
@@ -286,88 +283,6 @@ class TestGetNodataValue(unittest.TestCase):
 
     def test_fehlender_meta_wert(self):
         self.assertEqual(allGDS.get_nodata_value("datei.tif", "SB_DOP", {}), "")
-
-
-# ============================================================
-#  tag_mask_on_raster  (aus allGDS)
-#  GDAL wird durch ein minimales Fake-Dataset simuliert, damit nur die
-#  reine Masken-Logik (numpy-Vergleich ueber alle Baender) geprueft wird.
-# ============================================================
-class _FakeBand:
-    def __init__(self, array, mask_band):
-        self._array = array
-        self._mask_band = mask_band
-
-    def ReadAsArray(self, xoff, yoff, xsize, ysize):
-        return self._array[yoff:yoff + ysize, xoff:xoff + xsize]
-
-    def GetMaskBand(self):
-        return self._mask_band
-
-
-class _FakeMaskBand:
-    def __init__(self, shape):
-        self.written = np.zeros(shape, dtype=np.uint8)
-
-    def WriteArray(self, array, xoff=0, yoff=0):
-        ysize, xsize = array.shape
-        self.written[yoff:yoff + ysize, xoff:xoff + xsize] = array
-
-
-class _FakeDataset:
-    def __init__(self, band_arrays):
-        self.RasterCount = len(band_arrays)
-        self.RasterYSize, self.RasterXSize = band_arrays[0].shape
-        self._mask_band = _FakeMaskBand((self.RasterYSize, self.RasterXSize))
-        self._bands = [_FakeBand(arr, self._mask_band) for arr in band_arrays]
-
-    def GetRasterBand(self, i):
-        return self._bands[i - 1]
-
-    def CreateMaskBand(self, flags):
-        pass
-
-    def FlushCache(self):
-        pass
-
-
-class TestTagMaskOnRaster(unittest.TestCase):
-
-    def _run(self, band_arrays, nodata_str):
-        ds = _FakeDataset(band_arrays)
-        with unittest.mock.patch.object(allGDS.gdal, "Open", return_value=ds):
-            allGDS.tag_mask_on_raster("dummy.tif", nodata_str)
-        return ds._mask_band.written
-
-    def test_einzelnes_band_rand_ist_nodata(self):
-        arr = np.full((4, 4), 100, dtype=np.uint8)
-        arr[0, :] = 0
-        mask = self._run([arr], "0")
-        self.assertTrue((mask[0, :] == 0).all())
-        self.assertTrue((mask[1:, :] == 255).all())
-
-    def test_rgb_nur_ungueltig_wenn_alle_baender_nodata(self):
-        # Pixel (0,0): alle drei Baender 0 -> ungueltig.
-        # Pixel (0,1): nur zwei von drei Baendern 0 -> gueltig.
-        r = np.array([[0, 0], [100, 100]], dtype=np.uint8)
-        g = np.array([[0, 50], [100, 100]], dtype=np.uint8)
-        b = np.array([[0, 100], [100, 100]], dtype=np.uint8)
-        mask = self._run([r, g, b], "0 0 0")
-        expected = np.array([[0, 255], [255, 255]], dtype=np.uint8)
-        self.assertTrue((mask == expected).all())
-
-    def test_einzelwert_wird_auf_alle_baender_expandiert(self):
-        r = np.full((2, 2), 0, dtype=np.uint8)
-        g = np.full((2, 2), 0, dtype=np.uint8)
-        mask = self._run([r, g], "0")
-        self.assertTrue((mask == 0).all())
-
-    def test_falsche_anzahl_werte_wird_uebersprungen(self):
-        arr = np.full((2, 2), 0, dtype=np.uint8)
-        # 2 NoData-Werte fuer 3 Baender -> Funktion soll ohne Fehler abbrechen.
-        mask = self._run([arr, arr, arr], "0 0")
-        # Maske bleibt unberuehrt (Default: alles 0 aus _FakeMaskBand.__init__).
-        self.assertTrue((mask == 0).all())
 
 
 # ============================================================

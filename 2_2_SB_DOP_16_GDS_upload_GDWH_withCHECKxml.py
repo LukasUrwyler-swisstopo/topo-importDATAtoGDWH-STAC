@@ -6,7 +6,6 @@ import time
 import xml.etree.ElementTree as ET
 import hashlib
 import shutil
-import numpy as np
 from osgeo import gdal
 from xml.dom import minidom
 import sys
@@ -342,63 +341,6 @@ def tag_nodata_on_raster(file_path, nodata_str):
         ds.FlushCache()
         ds = None
 
-
-def tag_mask_on_raster(file_path, nodata_str):
-    """
-    Erzeugt zusaetzlich zum NoData-Tag eine interne per-Dataset-Maske
-    (GDAL_TIFF_INTERNAL_MASK, 1-bit DEFLATE, im TIFF selbst gespeichert).
-
-    Hintergrund: Bei der COG-Ableitung im GDWH-Catalog wird JPEG-Kompression
-    verwendet. Der COG-Treiber schreibt bei JPEG (verlustbehaftet) keinen
-    NoData-Wert, da ein exakter Pixelwert nach der Kompression nicht mehr
-    garantiert ist. Eine interne Maske bleibt dagegen verlustfrei erhalten
-    und wird vom COG-Treiber auch bei JPEG korrekt uebernommen.
-    Ein Pixel gilt nur dann als ungueltig, wenn ALLE Baender ihrem
-    jeweiligen NoData-Wert entsprechen (analog gdalwarp-Verhalten).
-    """
-    values = nodata_str.split()
-    if not values:
-        return
-
-    gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
-    try:
-        ds = gdal.Open(file_path, gdal.GA_Update)
-    except Exception as e:
-        log(f"[WARNUNG] Maske: '{os.path.basename(file_path)}' konnte nicht zum Schreiben geoeffnet werden: {e}")
-        return
-    if ds is None:
-        log(f"[WARNUNG] Maske: '{os.path.basename(file_path)}' konnte nicht zum Schreiben geoeffnet werden.")
-        return
-
-    try:
-        n_bands = ds.RasterCount
-        if len(values) == 1:
-            values = values * n_bands
-        if len(values) != n_bands:
-            log(f"[WARNUNG] Maske: {len(values)} Wert(e) fuer {n_bands} Baender "
-                f"in '{os.path.basename(file_path)}' - uebersprungen.")
-            return
-        nodata_values = [float(v) for v in values]
-
-        ds.CreateMaskBand(gdal.GMF_PER_DATASET)
-        mask_band = ds.GetRasterBand(1).GetMaskBand()
-
-        x_size, y_size = ds.RasterXSize, ds.RasterYSize
-        chunk_rows = 1000
-        for y_off in range(0, y_size, chunk_rows):
-            rows = min(chunk_rows, y_size - y_off)
-            is_nodata = np.ones((rows, x_size), dtype=bool)
-            for i in range(1, n_bands + 1):
-                band_arr = ds.GetRasterBand(i).ReadAsArray(0, y_off, x_size, rows)
-                is_nodata &= (band_arr == nodata_values[i - 1])
-            mask_band.WriteArray(np.where(is_nodata, 0, 255).astype(np.uint8), 0, y_off)
-    except Exception as e:
-        log(f"[WARNUNG] Maske konnte nicht gesetzt werden fuer '{os.path.basename(file_path)}': {e}")
-    finally:
-        ds.FlushCache()
-        ds = None
-
-
 def update_file_csv(output_path, full_file_path, GDS):
     csv_file_path = os.path.join(output_path, 'files.csv')
     filename = os.path.basename(full_file_path)
@@ -450,7 +392,6 @@ def files_in_order(path, output_path, GDS, meta_info):
                 nodata_str = meta_info.get("NoData", "")
                 if nodata_str:
                     tag_nodata_on_raster(full_file_path, nodata_str)
-                    tag_mask_on_raster(full_file_path, nodata_str)
             update_file_csv(output_path, full_file_path, GDS)
         except Exception as e:
             log(f"Fehler bei Datei {fn}: {e}")
