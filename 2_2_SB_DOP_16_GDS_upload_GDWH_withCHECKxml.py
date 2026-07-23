@@ -267,8 +267,8 @@ def create_xml(file_path, GDS, meta_info, cached_raster_attrs=None):
     for k, v in fields.items():
         ET.SubElement(root, k).text = v
 
-    # NoData aus meta_info
-    ET.SubElement(root, "NoData").text = meta_info.get("NoData", "")
+    # NoData aus meta_info (normalisiert, siehe normalize_nodata_for_output)
+    ET.SubElement(root, "NoData").text = normalize_nodata_for_output(meta_info.get("NoData", ""))
 
     line_ids = meta_info.get("Line_ID", [])
     if not line_ids:
@@ -309,6 +309,27 @@ def create_xml(file_path, GDS, meta_info, cached_raster_attrs=None):
     with open(xml_filename, 'w', encoding="utf-8") as f:
         f.write(formatted_xml)
 
+
+def normalize_nodata_for_output(nodata_str):
+    """
+    Der im GUI gewaehlte NoData-Wert ("weiss" oder "schwarz") dient ab jetzt
+    NUR NOCH als Quellwert fuer die Maskenberechnung (_compute_nodata_mask,
+    Vergleich gegen den tatsaechlichen Pixelwert). Der Wert, der als GDAL-Tag
+    (tag_nodata_on_raster) UND im XML <NoData> landet, wird immer auf 0
+    normalisiert.
+
+    Grund (Vorfall 23.7.2026, per Test in QGIS/STAC verifiziert, siehe
+    Skript 1 / README): die STAC-VRT-Pipeline fuellt Luecken zwischen
+    Kacheln (Bereiche ganz ohne Quelldatei) mit dem XML-NoData-Wert, waehrend
+    innerhalb einer Kachel maskierte Pixel beim gdal_translate-Schritt
+    ohnehin als 0 (schwarz) interpretiert werden. Bei "weiss" ergab das zwei
+    unterschiedliche NoData-Farben im Resultat. Mit "0 0 0 0" als
+    geschriebenem Wert stimmen beide ueberein.
+    """
+    values = nodata_str.split()
+    if not values:
+        return nodata_str
+    return " ".join("0" for _ in values)
 
 def tag_nodata_on_raster(file_path, nodata_str):
     """
@@ -480,7 +501,11 @@ def files_in_order(path, output_path, GDS, meta_info):
             if fn.lower().endswith(('.tif', '.tiff')):
                 nodata_str = meta_info.get("NoData", "")
                 if nodata_str:
-                    tag_nodata_on_raster(full_file_path, nodata_str)
+                    # nodata_str (Quellwert, z.B. "65535 65535 65535 65535") wird nur
+                    # fuer die Maskenberechnung verwendet. Der geschriebene GDAL-Tag
+                    # nutzt den normalisierten Wert (immer 0, siehe
+                    # normalize_nodata_for_output).
+                    tag_nodata_on_raster(full_file_path, normalize_nodata_for_output(nodata_str))
                     tag_mask_on_raster(full_file_path, nodata_str)
             update_file_csv(output_path, full_file_path, GDS)
         except Exception as e:

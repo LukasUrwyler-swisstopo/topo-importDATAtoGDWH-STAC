@@ -256,6 +256,32 @@ def get_nodata_value(filename, GDS, meta_info):
             return "-3.4028235e+38"
     return meta_info.get("NoData", "")
 
+def normalize_nodata_for_output(GDS, nodata_str):
+    """
+    SB_DOP: der im GUI gewaehlte NoData-Wert ("weiss" oder "schwarz") dient
+    ab jetzt NUR NOCH als Quellwert fuer die Maskenberechnung
+    (_compute_nodata_mask, Vergleich gegen den tatsaechlichen Pixelwert).
+    Der Wert, der als GDAL-Tag (tag_nodata_on_raster) UND im XML <NoData>
+    landet, wird immer auf 0 normalisiert.
+
+    Grund (Vorfall 23.7.2026, per Test in QGIS/STAC verifiziert): die
+    STAC-VRT-Pipeline fuellt Luecken zwischen Kacheln (Bereiche ganz ohne
+    Quelldatei) mit dem XML-NoData-Wert, waehrend innerhalb einer Kachel
+    maskierte Pixel beim gdal_translate-Schritt ohnehin als 0 (schwarz)
+    interpretiert werden. Bei "weiss" ergab das zwei unterschiedliche
+    NoData-Farben im Resultat (weisse Luecken, schwarze Maske). Mit "0 0 0"
+    (bzw. "0 0 0 0") als geschriebenem Wert stimmen beide ueberein.
+
+    SB_DSM/SB_DSM_PUNKTWOLKE haben eigene, feste NoData-Werte und bleiben
+    unveraendert.
+    """
+    if GDS in ("SB_DSM", "SB_DSM_PUNKTWOLKE"):
+        return nodata_str
+    values = nodata_str.split()
+    if not values:
+        return nodata_str
+    return " ".join("0" for _ in values)
+
 def tag_nodata_on_raster(file_path, nodata_str):
     """
     Schreibt den NoData-Wert zusaetzlich als echten GDAL-Tag auf jedes Band
@@ -465,7 +491,8 @@ def create_xml(file_path, GDS, meta_info, cached_raster_attrs=None):
     # NoData: automatisch für SB_DSM, sonst aus meta_info
     # NoData nur schreiben, wenn NICHT SB_DSM_PUNKTWOLKE
     if GDS != "SB_DSM_PUNKTWOLKE":
-        ET.SubElement(root, "NoData").text = get_nodata_value(filename, GDS, meta_info)
+        ET.SubElement(root, "NoData").text = normalize_nodata_for_output(
+            GDS, get_nodata_value(filename, GDS, meta_info))
 
     line_ids = meta_info.get("Line_ID", [])
     if not line_ids:
@@ -670,8 +697,19 @@ def files_in_order(src, out, GDS, meta):
             if GDS != "SB_DSM_PUNKTWOLKE" and fn.lower().endswith(('.tif', '.tiff')):
                 nodata_str = get_nodata_value(fn, GDS, meta)
                 if nodata_str:
-                    tag_nodata_on_raster(fp, nodata_str)
-                    tag_mask_on_raster(fp, nodata_str)
+                    # nodata_str (Quellwert, z.B. "255 255 255") wird nur fuer die
+                    # Maskenberechnung verwendet. Der geschriebene GDAL-Tag nutzt
+                    # den normalisierten Wert (SB_DOP: immer 0, siehe
+                    # normalize_nodata_for_output).
+                    tag_nodata_on_raster(fp, normalize_nodata_for_output(GDS, nodata_str))
+                    # SB_DSM DSM-Raster (nicht Hillshade) bewusst OHNE interne Maske:
+                    # der NoData-Tag war hier bereits vorher korrekt gesetzt, die
+                    # zusaetzliche Maske fuehrte in STAC/Kartenviewer zu falscher
+                    # noData-Darstellung (Vorfall 23.7.2026). Fuer Hillshade bleibt
+                    # die Maske wie gehabt bestehen.
+                    is_sb_dsm_raster = GDS == "SB_DSM" and "_hillshade_" not in fn.lower()
+                    if not is_sb_dsm_raster:
+                        tag_mask_on_raster(fp, nodata_str)
             update_file_csv(out, fp, GDS)
         except Exception as e:
             # OPT: Vollständiger Traceback im Log für einfacheres Debugging

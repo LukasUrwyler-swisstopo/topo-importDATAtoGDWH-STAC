@@ -63,7 +63,9 @@ Hauptscript starten  (GUI)
         │   verlustbehafteter Kompression vom COG-Treiber ignoriert wird.
         │   Fail-safe: Maske wird zuerst vollständig im Speicher berechnet,
         │   erst bei Erfolg geschrieben – kein Risiko einer halbfertigen
-        │   "alles ungültig"-Maske bei einem GDAL/NumPy-Fehler.)
+        │   "alles ungültig"-Maske bei einem GDAL/NumPy-Fehler.
+        │   AUSNAHME: SB_DSM DSM-Raster [nicht Hillshade] – dort NUR NoData-Tag,
+        │   keine Maske, siehe Vorfall 23.7.2026.)
         ├─ Daten ins Bucket kopieren  (NV-Ordner; PUNKTWOLKE: +PrecalculatedFormats)
         └─ files.csv erstellen  (MD5-Hash, TileKey, WKT-Footprint)
                 │
@@ -73,6 +75,8 @@ Hauptscript starten  (GUI)
                 ▼
         GDWH Import  →  STAC-Integration (automatisch)
 ```
+
+> **Hinweis Verarbeitungsreihenfolge:** NoData-Tag und Maske werden auf den Dateien im **Quellordner** gesetzt (bevor `create_and_copy_order()` sie ins Bucket kopiert) – die Kopie im Bucket ist danach identisch zur (bereits veränderten) Quelldatei. Die Original-Rasterdateien auf dem Quelllaufwerk werden also direkt mitverändert, nicht nur eine Kopie im Bucket.
 
 ### GDS-Routing
 
@@ -117,7 +121,7 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 | 1 | `Auftragstyp` | Art des Auftrags | `kry` / `ram` / `bim` / `mom` / `wam` |
 | 2 | `Area` | AOI-Name – wird live aus der ersten passenden Datei im Quellordner abgeleitet, ist aber **editierbar**. Ein hier gesetzter Wert überschreibt für den ganzen Lauf die pro-Datei-Ableitung aus dem Dateinamen (`extract_area()`) – wichtig als Absicherung, falls das Dateinamen-Format nicht passt und "Check - NameFormat" übersehen wurde | Freitext, z.B. `PLAINE_MORTE` |
 | 3 | *(TileKey-Vorschau)* | Reine Diagnoseanzeige (nicht editierbar): TileKey-Beispiel aus der ersten Datei. Erscheint erst, sobald ein gültiger Quellordner gesetzt ist. Wird pro Datei einzeln neu berechnet, nicht überschreibbar. Rote Schrift + Hinweis, wenn das Format nicht `XXXX_YYYY` entspricht (ausser SB_DSM, dort fix `1000`) | – |
-| 4 | `NoData` | NoData-Wert – wird ins XML geschrieben, als GDAL-Tag auf jedes Band des TIFF gesetzt (`SetNoDataValue`) **und** zusätzlich als interne per-Dataset-Maske geschrieben (`tag_mask_on_raster`, siehe unten) | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
+| 4 | `NoData` | NoData-Wert – für SB_DOP/SB_DOP_16 dient der hier gewählte Wert nur noch als **Quellwert für die Maskenberechnung** (`tag_mask_on_raster`, siehe unten). Der tatsächlich als GDAL-Tag (`SetNoDataValue`) **und** im XML `<NoData>` geschriebene Wert wird immer auf `"0 0 0"` / `"0 0 0 0"` normalisiert (`normalize_nodata_for_output`, siehe unten) | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
 | 5 | `TerrainModel` | Verwendetes Geländemodell | siehe Auswahlliste |
 | 6 | `CameraSystem` | Kamerasystem | `"Leica ADS100"` / `"Leica ADS80"` / `"Leica DMC-4"` |
 | 7 | `SourceReferenceSystem` | Koordinatensystem | `"(EPSG:2056) CH1903+ / LV95_LN02"` *(fix)* |
@@ -132,6 +136,10 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 > **SB_DSM_PUNKTWOLKE:** kein NoData-Value.
 >
 > **Warum zusätzlich eine interne Maske?** Die spätere COG-Ableitung im GDWH-Catalog nutzt JPEG-Kompression (verlustbehaftet). Der GDAL-COG-Treiber schreibt dabei bewusst **keinen** NoData-Wert, da ein exakter Pixelwert nach der Kompression nicht mehr garantiert ist. Eine interne per-Dataset-Maske (`GDAL_TIFF_INTERNAL_MASK`, 1-bit DEFLATE) bleibt dagegen verlustfrei erhalten und wird vom COG-Treiber auch bei JPEG korrekt übernommen – daher setzt `tag_mask_on_raster()` diese zusätzlich zum klassischen NoData-Tag.
+>
+> **Ausnahme SB_DSM DSM-Raster (nicht Hillshade, Vorfall 23.7.2026):** Hier wird `tag_mask_on_raster()` bewusst **nicht** aufgerufen – nur der klassische NoData-Tag wird gesetzt (wie vor Einführung der Maske). Die Maske führte bei diesem Rasterformat zu falscher/inkonsistenter NoData-Darstellung im STAC-Kartenviewer und in QGIS (teils schwarze, teils weisse NoData-Pixel). Für SB_DSM-Hillshade bleibt die Maske weiterhin aktiv, da sie dort visuell korrekt ist.
+>
+> **NoData-Normalisierung bei SB_DOP/SB_DOP_16 auf 0 (Vorfall 23.7.2026, per Test verifiziert):** Wird im GUI `"weiss"` gewählt, entstand in der STAC-Pipeline dasselbe Problem wie oben, nur mit vertauschten Farben: Der externe VRT-Merge-Schritt (Patriks STAC-Pipeline) füllt Bounding-Box-Lücken zwischen Kacheln (Bereiche ganz ohne Quelldatei) mit dem XML-`<NoData>`-Wert – bei `"weiss"` also weiss. Innerhalb einer Kachel maskierte Pixel werden beim `gdal_translate`-Schritt dagegen unabhängig davon als 0 (schwarz) interpretiert. Resultat: zwei unterschiedliche NoData-Farben im selben Bild (weisse Lücken zwischen Kacheln, schwarze Maske innerhalb). Deshalb: `"weiss"`/`"schwarz"` im GUI bestimmt weiterhin, mit welchem Quellwert die Maske berechnet wird (muss dem tatsächlichen Pixelwert im Ausgangsmaterial entsprechen) – der geschriebene GDAL-Tag und der XML-`<NoData>`-Wert werden davon unabhängig **immer** auf `"0 0 0"` (bzw. `"0 0 0 0"`) normalisiert (`normalize_nodata_for_output()`), damit VRT-Lücken und interne Maske dieselbe Farbe ergeben. Die Original-Quelldateien werden dabei mitverändert (siehe Hinweis zur Verarbeitungsreihenfolge unten) – das gilt als Verbesserung der Quelldaten, nicht als Nebenwirkung.
 >
 > **Fail-safe-Design (wichtig, siehe Vorfall 22.7.2026):** Ein GDAL/NumPy-ABI-Konflikt in der Ausführungsumgebung liess `ReadAsArray()` mit einer Exception abbrechen, *nachdem* `CreateMaskBand()` bereits eine leere (per Default komplett ungültige) Maske angelegt hatte – Ergebnis war ein COG, der auf map.geo.admin.ch vollständig transparent gerendert wurde. Seither wird die Maske zuerst **vollständig im Speicher** berechnet (`_compute_nodata_mask`) und `CreateMaskBand()`/`WriteArray()` erst bei garantiertem Erfolg aufgerufen. Schlägt die Berechnung fehl, bleibt die TIFF-Datei unverändert. Zusätzlich setzt die GUI beim OSGeo4W-Subprocess `PYTHONNOUSERSITE=1`, damit private User-Site-Packages (z.B. eine per `pip install --user` installierte NumPy-Version) nicht die zur OSGeo4W-`gdal_array`-Bindung passende NumPy-Version überschatten.
 > 
