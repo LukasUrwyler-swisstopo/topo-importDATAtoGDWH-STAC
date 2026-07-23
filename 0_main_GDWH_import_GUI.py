@@ -35,13 +35,21 @@ GDS_CUSTOM_ATTR = {
     "SB_DSM_PUNKTWOLKE": "Digital Surface Model - PointCloud LAZ (DSM photogrammetric autocorrelation)",
 }
 
-# GDWH-Catalog-Import-Link je GDS (für Hinweis-Dialog nach erfolgreicher Prozessierung)
-CATALOG_LINKS = {
-    "SB_DOP":            "https://ltgdwh.adr.admin.ch/catalog-ng/catalog/SB_DOP/import",
-    "SB_DOP_16":         "https://ltgdwh.adr.admin.ch/catalog-ng/catalog/SB_DOP_16/import",
-    "SB_DSM":            "https://ltgdwh.adr.admin.ch/catalog-ng/catalog/SB_DSM/import",
-    "SB_DSM_PUNKTWOLKE": "https://ltgdwh.adr.admin.ch/catalog-ng/catalog/SB_DSM_PUNKTWOLKE/import",
-}
+# GDWH-Catalog-Import-Link je GDS (für Hinweis-Dialog nach erfolgreicher Prozessierung).
+# Zwei Umgebungen je nach GDWH-BUCKET-Path: "...\BUCKET_INT\..." -> INT-Portal
+# (ltgdwhi), "...\BUCKET\..." -> Produktiv-Portal (ltgdwh).
+CATALOG_HOST_PROD = "ltgdwh.adr.admin.ch"
+CATALOG_HOST_INT  = "ltgdwhi.adr.admin.ch"
+CATALOG_GDS_TYPES = ("SB_DOP", "SB_DOP_16", "SB_DSM", "SB_DSM_PUNKTWOLKE")
+
+
+def _catalog_link(gds, ziel):
+    """Baut den GDWH-Catalog-Import-Link fuer gds, je nach BUCKET/BUCKET_INT im Zielpfad."""
+    if gds not in CATALOG_GDS_TYPES:
+        return ""
+    parts = [p for p in (ziel or "").replace("/", "\\").split("\\") if p]
+    host = CATALOG_HOST_INT if "BUCKET_INT" in parts else CATALOG_HOST_PROD
+    return f"https://{host}/catalog-ng/catalog/{gds}/import"
 
 AUFTRAGSTYPEN  = ["kry", "ram", "bim", "mom", "wam"]
 TERRAIN_MODELS = [
@@ -92,6 +100,7 @@ LIGHT = {
     "fg":        "#1a1a1a",
     "fg_dim":    "#666666",
     "accent":    "#0063b1",
+    "scroll":    "#9098a8",   # Grau mit leichtem Blaustich für Scrollbar
     "hdr_bg":    "#1a3a5c",
     "hdr_fg":    "#ffffff",
     "btn":       "#e1e1e1",
@@ -114,6 +123,7 @@ DARK = {
     "fg":        "#cccccc",   # Haupttext
     "fg_dim":    "#7a7a7a",   # Gedimmter Hinweistext
     "accent":    "#4fc3f7",   # Hellblau für Hervorhebungen
+    "scroll":    "#6a6f7d",   # Grau mit leichtem Blaustich für Scrollbar
     "hdr_bg":    "#1a1a1a",   # Header-Balken
     "hdr_fg":    "#cccccc",   # Header-Text
     "btn":       "#3c3c3c",   # Button-Hintergrund
@@ -670,11 +680,11 @@ class ImportDoneDialog(tk.Toplevel):
     """Hinweis-Dialog nach erfolgreicher Prozessierung – GDS-spezifischer GDWH-Catalog-Link
     und die nächsten Schritte für den manuellen GDWH-Import."""
 
-    def __init__(self, parent, gds, ordner_name, dark=True):
+    def __init__(self, parent, gds, ordner_name, ziel="", dark=True):
         super().__init__(parent)
         self._dark = dark
         T = DARK if dark else LIGHT
-        self._link = CATALOG_LINKS.get(gds, "")
+        self._link = _catalog_link(gds, ziel)
 
         self.title("Prozessierung abgeschlossen")
         self.resizable(False, False)
@@ -948,6 +958,46 @@ class GDWHApp(tk.Tk):
         self.tilekey_hint.grid(row=r+1, column=1, sticky="w", padx=(8, 0))
         r += 2
 
+        # NoData
+        self.nodata_lbl  = ttk.Label(sec, text="NoData:", font=("Segoe UI", 9, "bold"))
+        self.nodata_lbl.grid(row=r, column=0, sticky="w", pady=3)
+        self.nodata_var  = tk.StringVar()
+        self.nodata_cb   = ttk.Combobox(sec, textvariable=self.nodata_var,
+                                         state="readonly", width=55)
+        self.nodata_cb.grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
+        self.nodata_auto = ttk.Label(sec, font=("", 8), justify="left")
+        self.nodata_auto.grid(row=r+1, column=1, sticky="w", padx=(8, 0))
+        self._dim_labels.append(self.nodata_auto)
+        r += 2
+
+        # TerrainModel
+        ttk.Label(sec, text="TerrainModel:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
+        self.terrain_var = tk.StringVar(value=TERRAIN_MODELS[0])
+        ttk.Combobox(sec, textvariable=self.terrain_var, values=TERRAIN_MODELS,
+                      state="readonly", width=68
+                      ).grid(row=r, column=1, sticky="ew", padx=(8, 0), pady=3)
+        r += 1
+
+        # CameraSystem
+        ttk.Label(sec, text="CameraSystem:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
+        self.camera_var = tk.StringVar(value=CAMERA_SYSTEMS[0])
+        ttk.Combobox(sec, textvariable=self.camera_var, values=CAMERA_SYSTEMS,
+                      state="readonly", width=20
+                      ).grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
+        r += 1
+
+        # SourceReferenceSystem (unveränderlich)
+        ttk.Label(sec, text="SourceRefSys:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
+        srs_row = ttk.Frame(sec)
+        srs_row.grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
+        srs_val = ttk.Label(srs_row, text=SOURCE_REF_SYS, font=("", 9, "bold"))
+        srs_val.pack(side="left")
+        srs_fix = ttk.Label(srs_row, text="  [Standard]", font=("", 8))
+        srs_fix.pack(side="left")
+        self._accent_labels.append(srs_val)
+        self._dim_labels.append(srs_fix)
+        r += 1
+
         # CustomAttribute – automatisch per GDS, kein Dropdown
         ttk.Label(sec, text="CustomAttribute:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="nw", pady=3)
         ca_row = ttk.Frame(sec)
@@ -985,50 +1035,10 @@ class GDWHApp(tk.Tk):
         self.lineid_single_lf.grid_remove()  # standardmässig versteckt
         r += 1
 
-        # allAreaLineIDs (nur SB_DOP_16)
+        # allAreaLineIDs (nur SB_DOP_16) – direkt nach Line_ID
         self.all_area_w = LineIDWidget(sec, "allAreaLineIDs",
             comment="alle Fluglinien Line_IDs des AOIs – mindestens eine Line_ID nötig")
         self.all_area_w.grid(row=r, column=0, columnspan=2, sticky="ew", pady=4)
-        r += 1
-
-        # NoData
-        self.nodata_lbl  = ttk.Label(sec, text="NoData:", font=("Segoe UI", 9, "bold"))
-        self.nodata_lbl.grid(row=r, column=0, sticky="w", pady=3)
-        self.nodata_var  = tk.StringVar()
-        self.nodata_cb   = ttk.Combobox(sec, textvariable=self.nodata_var,
-                                         state="readonly", width=55)
-        self.nodata_cb.grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
-        self.nodata_auto = ttk.Label(sec, font=("", 8), justify="left")
-        self.nodata_auto.grid(row=r+1, column=1, sticky="w", padx=(8, 0))
-        self._dim_labels.append(self.nodata_auto)
-        r += 2
-
-        # TerrainModel
-        ttk.Label(sec, text="TerrainModel:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
-        self.terrain_var = tk.StringVar(value=TERRAIN_MODELS[0])
-        ttk.Combobox(sec, textvariable=self.terrain_var, values=TERRAIN_MODELS,
-                      state="readonly", width=68
-                      ).grid(row=r, column=1, sticky="ew", padx=(8, 0), pady=3)
-        r += 1
-
-        # SourceReferenceSystem (unveränderlich)
-        ttk.Label(sec, text="SourceRefSys:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
-        srs_row = ttk.Frame(sec)
-        srs_row.grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
-        srs_val = ttk.Label(srs_row, text=SOURCE_REF_SYS, font=("", 9, "bold"))
-        srs_val.pack(side="left")
-        srs_fix = ttk.Label(srs_row, text="  [Standard]", font=("", 8))
-        srs_fix.pack(side="left")
-        self._accent_labels.append(srs_val)
-        self._dim_labels.append(srs_fix)
-        r += 1
-
-        # CameraSystem
-        ttk.Label(sec, text="CameraSystem:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
-        self.camera_var = tk.StringVar(value=CAMERA_SYSTEMS[0])
-        ttk.Combobox(sec, textvariable=self.camera_var, values=CAMERA_SYSTEMS,
-                      state="readonly", width=20
-                      ).grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
 
     def _build_paths(self, parent):
         sec = ttk.LabelFrame(parent, text="Pfade", padding=10, style="Section.TLabelframe")
@@ -1184,8 +1194,11 @@ class GDWHApp(tk.Tk):
             selectbackground=T["sel_bg"], selectforeground=T["sel_fg"],
         )
         s.configure("Vertical.TScrollbar",
-            background=T["btn"], troughcolor=T["root"],
+            background=T["scroll"], troughcolor=T["root"],
             bordercolor=T["sep"], arrowcolor=T["fg"],
+        )
+        s.map("Vertical.TScrollbar",
+            background=[("active", T["scroll"]), ("pressed", T["scroll"])],
         )
         s.configure("TSeparator", background=T["sep"])
         s.configure("TProgressbar",
@@ -1330,6 +1343,7 @@ class GDWHApp(tk.Tk):
                 except tk.TclError: pass
 
         self._refresh_area_tilekey_preview()
+        self._update_start_btn_state()
 
     # ── Area / TileKey Live-Vorschau ─────────────────────────────────────────
     _TILEKEY_RE = re.compile(r'^\d{4}_\d{4}$')
@@ -1344,12 +1358,21 @@ class GDWHApp(tk.Tk):
         gds = self.gds_var.get()
         src = (self.if_var.get() if gds == "SB_DOP_16" else self.quelle_var.get()).strip().strip('"')
 
+        T = DARK if self._dark else LIGHT
+        if not os.path.isdir(src):
+            # Noch kein (gueltiger) Quellordner gesetzt - Vorschau leer lassen,
+            # statt verwirrend schon beim Oeffnen einen roten Fehler zu zeigen.
+            self.area_var.set("")
+            self.tilekey_preview_var.set("")
+            self.tilekey_preview_lbl.configure(foreground=T["fg"])
+            self.tilekey_hint.config(text="")
+            return
+
         self.area_var.set(self._extract_area_from_source(src, gds))
 
         tilekey, _fn = self._extract_tilekey_from_source(src, gds)
         self.tilekey_preview_var.set(tilekey)
 
-        T = DARK if self._dark else LIGHT
         if gds == "SB_DSM" or self._TILEKEY_RE.match(tilekey):
             self.tilekey_preview_lbl.configure(foreground=T["fg"])
             self.tilekey_hint.config(text="")
@@ -1560,7 +1583,38 @@ class GDWHApp(tk.Tk):
                 self._log(data)
             elif kind == "done":
                 self._on_done(success=data)
+        self._update_start_btn_state()
         self.after(120, self._poll_log)
+
+    def _update_start_btn_state(self):
+        """Aktiviert IMPORT STARTEN erst, wenn alle noetigen Meta-Felder und
+        Pfade einen Eintrag haben. Wird laufend ueber den Log-Poll-Zyklus
+        (alle 120ms) neu ausgewertet - deckt damit alle Eingabewege ab
+        (Tippen, Dropdown, Ordner-Dialog, LineIDWidget) ohne Einzel-Traces."""
+        if self._running or not hasattr(self, "start_btn"):
+            return
+
+        gds    = self.gds_var.get()
+        quelle = (self.if_var.get() if gds == "SB_DOP_16" else self.quelle_var.get()).strip().strip('"')
+        ziel   = self.ziel_var.get().strip().strip('"')
+        area   = self.area_var.get().strip()
+
+        ok = (bool(quelle) and os.path.isdir(quelle)
+              and bool(ziel)
+              and bool(area) and not area.startswith("—")
+              and bool(self.terrain_var.get().strip())
+              and bool(self.camera_var.get().strip()))
+
+        if gds not in ("SB_DSM", "SB_DSM_PUNKTWOLKE"):
+            ok = ok and bool(self.nodata_var.get().strip())
+
+        if gds == "SB_DOP_16":
+            ok = ok and bool(self.lineid_single_var.get().strip())
+            ok = ok and bool(self.all_area_w.get_ids())
+        else:
+            ok = ok and bool(self.lineid_w.get_ids())
+
+        self.start_btn.config(state=("normal" if ok else "disabled"))
 
     def _on_done(self, success):
         self._running = False
@@ -1578,7 +1632,7 @@ class GDWHApp(tk.Tk):
             self._pending_archive = None
             self._pending_ziel    = None
             ordner_name = os.path.basename(ziel.replace("/", "\\").rstrip("\\")) if ziel else ""
-            ImportDoneDialog(self, gds, ordner_name, dark=self._dark).wait()
+            ImportDoneDialog(self, gds, ordner_name, ziel=ziel, dark=self._dark).wait()
         else:
             self._pending_archive = None
             self._pending_ziel    = None

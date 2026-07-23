@@ -112,16 +112,20 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 
 | Parameter | Beschreibung | Mögliche Werte |
 |-----------|-------------|----------------|
-| `Auftragstyp` | Art des Auftrags | `kry` / `ram` / `bim` / `mom` / `wam` |
-| `Area` | AOI-Name – wird live aus der ersten passenden Datei im Quellordner abgeleitet, ist aber **editierbar**. Ein hier gesetzter Wert überschreibt für den ganzen Lauf die pro-Datei-Ableitung aus dem Dateinamen (`extract_area()`) – wichtig als Absicherung, falls das Dateinamen-Format nicht passt und "Check - NameFormat" übersehen wurde | Freitext, z.B. `PLAINE_MORTE` |
-| *(TileKey-Vorschau)* | Reine Diagnoseanzeige (nicht editierbar): TileKey-Beispiel aus der ersten Datei. Wird pro Datei einzeln neu berechnet, nicht überschreibbar. Rote Schrift + Hinweis, wenn das Format nicht `XXXX_YYYY` entspricht (ausser SB_DSM, dort fix `1000`) | – |
-| `CustomAttribute` | Beschreibung des Datenprodukts | siehe Auswahlliste |
-| `Line_ID` | Befliegungslinien-IDs | `["YYYYMMDD_HHMM_QQQQQ", ...]` – wird von der GUI automatisch chronologisch sortiert (älteste zuoberst) |
-| `allAreaLineIDs` | Alle LineIDs des Gebiets *(nur SB_DOP_16)* | `["YYYYMMDD_HHMM_QQQQQ", ...]` |
-| `NoData` | NoData-Wert – wird ins XML geschrieben, als GDAL-Tag auf jedes Band des TIFF gesetzt (`SetNoDataValue`) **und** zusätzlich als interne per-Dataset-Maske geschrieben (`tag_mask_on_raster`, siehe unten) | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
-| `TerrainModel` | Verwendetes Geländemodell | siehe Auswahlliste |
-| `SourceReferenceSystem` | Koordinatensystem | `"(EPSG:2056) CH1903+ / LV95_LN02"` *(fix)* |
-| `CameraSystem` | Kamerasystem | `"Leica ADS100"` / `"Leica ADS80"` / `"Leica DMC-4"` |
+| Reihenfolge im GUI | Parameter | Beschreibung | Mögliche Werte |
+|:---:|-----------|-------------|----------------|
+| 1 | `Auftragstyp` | Art des Auftrags | `kry` / `ram` / `bim` / `mom` / `wam` |
+| 2 | `Area` | AOI-Name – wird live aus der ersten passenden Datei im Quellordner abgeleitet, ist aber **editierbar**. Ein hier gesetzter Wert überschreibt für den ganzen Lauf die pro-Datei-Ableitung aus dem Dateinamen (`extract_area()`) – wichtig als Absicherung, falls das Dateinamen-Format nicht passt und "Check - NameFormat" übersehen wurde | Freitext, z.B. `PLAINE_MORTE` |
+| 3 | *(TileKey-Vorschau)* | Reine Diagnoseanzeige (nicht editierbar): TileKey-Beispiel aus der ersten Datei. Erscheint erst, sobald ein gültiger Quellordner gesetzt ist. Wird pro Datei einzeln neu berechnet, nicht überschreibbar. Rote Schrift + Hinweis, wenn das Format nicht `XXXX_YYYY` entspricht (ausser SB_DSM, dort fix `1000`) | – |
+| 4 | `NoData` | NoData-Wert – wird ins XML geschrieben, als GDAL-Tag auf jedes Band des TIFF gesetzt (`SetNoDataValue`) **und** zusätzlich als interne per-Dataset-Maske geschrieben (`tag_mask_on_raster`, siehe unten) | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
+| 5 | `TerrainModel` | Verwendetes Geländemodell | siehe Auswahlliste |
+| 6 | `CameraSystem` | Kamerasystem | `"Leica ADS100"` / `"Leica ADS80"` / `"Leica DMC-4"` |
+| 7 | `SourceReferenceSystem` | Koordinatensystem | `"(EPSG:2056) CH1903+ / LV95_LN02"` *(fix)* |
+| 8 | `CustomAttribute` | Beschreibung des Datenprodukts | siehe Auswahlliste |
+| 9 | `Line_ID` | Befliegungslinien-IDs | `["YYYYMMDD_HHMM_QQQQQ", ...]` – wird von der GUI automatisch chronologisch sortiert (älteste zuoberst) |
+| 10 | `allAreaLineIDs` | Alle LineIDs des Gebiets *(nur SB_DOP_16, direkt nach Line_ID)* | `["YYYYMMDD_HHMM_QQQQQ", ...]` |
+
+> **IMPORT STARTEN** bleibt deaktiviert, bis Quellordner, Zielordner, Area, NoData *(ausser SB_DSM/SB_DSM_PUNKTWOLKE)*, TerrainModel, CameraSystem und Line_ID *(bzw. zusätzlich allAreaLineIDs bei SB_DOP_16)* alle einen Eintrag haben.
 
 > **SB_DSM:** NoData wird automatisch gesetzt (`"255"` für Hillshade [1-Band Grayscale], `"-3.4028235e+38"` für DSM-Raster).
 > 
