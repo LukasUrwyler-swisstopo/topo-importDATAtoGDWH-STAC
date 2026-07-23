@@ -9,10 +9,14 @@ Ausfuehren:
 
 import importlib.util
 import os
+import re
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from unittest.mock import MagicMock
+
+import numpy as np
 
 # ============================================================
 #  osgeo/gdal als Mock registrieren, damit die Scripts ohne
@@ -258,10 +262,13 @@ class TestExtractTileDop16(unittest.TestCase):
 class TestGetNodataValue(unittest.TestCase):
 
     def test_hillshade_immer_weiss(self):
+        # Hillshade ist 1-Band Grayscale - ein einzelner Wert, der von
+        # tag_nodata_on_raster/tag_mask_on_raster automatisch auf die
+        # tatsaechliche Bandanzahl expandiert wird (siehe TestTagMaskOnRaster).
         meta = {"NoData": "255 255 255"}
         self.assertEqual(
             allGDS.get_nodata_value("2025_AOI_hillshade_1000.tif", "SB_DSM", meta),
-            "255 255 255")
+            "255")
 
     def test_dsm_immer_float_min(self):
         meta = {"NoData": "-3.4028235e+38"}
@@ -283,6 +290,170 @@ class TestGetNodataValue(unittest.TestCase):
 
     def test_fehlender_meta_wert(self):
         self.assertEqual(allGDS.get_nodata_value("datei.tif", "SB_DOP", {}), "")
+
+
+# ============================================================
+#  tag_mask_on_raster / _compute_nodata_mask  (aus allGDS)
+#  GDAL wird durch ein minimales Fake-Dataset simuliert, damit nur die
+#  reine Masken-Logik (numpy-Vergleich ueber alle Baender) sowie das
+#  Fail-Safe-Verhalten (kein Schreiben bei Lesefehler) geprueft werden.
+# ============================================================
+class _FakeBand:
+    def __init__(self, array, mask_band, raise_on_read=False):
+        self._array = array
+        self._mask_band = mask_band
+        self._raise_on_read = raise_on_read
+
+    def ReadAsArray(self, xoff, yoff, xsize, ysize):
+        if self._raise_on_read:
+            raise RuntimeError("simulierter Lesefehler (z.B. NumPy-ABI-Konflikt)")
+        return self._array[yoff:yoff + ysize, xoff:xoff + xsize]
+
+    def GetMaskBand(self):
+        return self._mask_band
+
+
+class _FakeMaskBand:
+    def __init__(self, shape):
+        self.written = np.zeros(shape, dtype=np.uint8)
+        self.write_calls = 0
+
+    def WriteArray(self, array, xoff=0, yoff=0):
+        self.write_calls += 1
+        ysize, xsize = array.shape
+        self.written[yoff:yoff + ysize, xoff:xoff + xsize] = array
+
+
+class _FakeDataset:
+    def __init__(self, band_arrays, raise_on_read=False):
+        self.RasterCount = len(band_arrays)
+        self.RasterYSize, self.RasterXSize = band_arrays[0].shape
+        self._mask_band = _FakeMaskBand((self.RasterYSize, self.RasterXSize))
+        self._bands = [_FakeBand(arr, self._mask_band, raise_on_read) for arr in band_arrays]
+        self.mask_created = False
+
+    def GetRasterBand(self, i):
+        return self._bands[i - 1]
+
+    def CreateMaskBand(self, flags):
+        self.mask_created = True
+
+    def FlushCache(self):
+        pass
+
+
+class TestTagMaskOnRaster(unittest.TestCase):
+
+    def _run(self, band_arrays, nodata_str, raise_on_read=False):
+        ds = _FakeDataset(band_arrays, raise_on_read=raise_on_read)
+        with unittest.mock.patch.object(allGDS.gdal, "Open", return_value=ds):
+            allGDS.tag_mask_on_raster("dummy.tif", nodata_str)
+        return ds
+
+    def test_einzelnes_band_rand_ist_nodata(self):
+        arr = np.full((4, 4), 100, dtype=np.uint8)
+        arr[0, :] = 0
+        ds = self._run([arr], "0")
+        mask = ds._mask_band.written
+        self.assertTrue((mask[0, :] == 0).all())
+        self.assertTrue((mask[1:, :] == 255).all())
+        self.assertTrue(ds.mask_created)
+
+    def test_weisses_nodata_bei_16bit_dop(self):
+        # SB_DOP_16 NRGB mit weissem NoData (65535 65535 65535 65535).
+        arr = np.full((2, 2), 65535, dtype=np.uint16)
+        arr[0, 0] = 12345  # ein gueltiges Pixel
+        ds = self._run([arr, arr, arr, arr], "65535 65535 65535 65535")
+        expected = np.array([[255, 0], [0, 0]], dtype=np.uint8)
+        self.assertTrue((ds._mask_band.written == expected).all())
+
+    def test_sb_dsm_float32_nodata_praezision(self):
+        # SB_DSM NoData-Sentinel als Dezimalstring ("-3.4028235e+38") muss
+        # trotz Rundung exakt den echten float32-Wert (-FLT_MAX) im Raster
+        # treffen (NumPy>=2.0 NEP-50-Promotion: Skalar wird auf float32
+        # heruntergecastet, nicht das Array auf float64 hochgecastet).
+        sentinel = np.float32(-3.4028235e+38)
+        arr = np.array([[sentinel, 1234.5], [1234.5, 1234.5]], dtype=np.float32)
+        ds = self._run([arr], "-3.4028235e+38")
+        expected = np.array([[0, 255], [255, 255]], dtype=np.uint8)
+        self.assertTrue((ds._mask_band.written == expected).all())
+
+    def test_rgb_nur_ungueltig_wenn_alle_baender_nodata(self):
+        # Pixel (0,0): alle drei Baender 0 -> ungueltig.
+        # Pixel (0,1): nur zwei von drei Baendern 0 -> gueltig.
+        r = np.array([[0, 0], [100, 100]], dtype=np.uint8)
+        g = np.array([[0, 50], [100, 100]], dtype=np.uint8)
+        b = np.array([[0, 100], [100, 100]], dtype=np.uint8)
+        ds = self._run([r, g, b], "0 0 0")
+        expected = np.array([[0, 255], [255, 255]], dtype=np.uint8)
+        self.assertTrue((ds._mask_band.written == expected).all())
+
+    def test_einzelwert_wird_auf_alle_baender_expandiert(self):
+        r = np.full((2, 2), 0, dtype=np.uint8)
+        g = np.full((2, 2), 0, dtype=np.uint8)
+        ds = self._run([r, g], "0")
+        self.assertTrue((ds._mask_band.written == 0).all())
+
+    def test_falsche_anzahl_werte_verhindert_maskenerstellung(self):
+        arr = np.full((2, 2), 0, dtype=np.uint8)
+        # 2 NoData-Werte fuer 3 Baender -> Funktion soll ohne Fehler abbrechen,
+        # OHNE ueberhaupt eine Maske anzulegen.
+        ds = self._run([arr, arr, arr], "0 0")
+        self.assertFalse(ds.mask_created)
+        self.assertEqual(ds._mask_band.write_calls, 0)
+
+    def test_lesefehler_verhindert_maskenerstellung(self):
+        # Kernszenario des Vorfalls vom 22.7.: ein Fehler beim Lesen
+        # (z.B. NumPy-ABI-Konflikt) darf NICHT zu einer halbfertig
+        # geschriebenen "alles ungueltig"-Maske fuehren. Fail-safe:
+        # CreateMaskBand()/WriteArray() duerfen dann gar nicht erst
+        # aufgerufen werden.
+        arr = np.full((4, 4), 100, dtype=np.uint8)
+        ds = self._run([arr], "0", raise_on_read=True)
+        self.assertFalse(ds.mask_created)
+        self.assertEqual(ds._mask_band.write_calls, 0)
+
+
+# ============================================================
+#  create_xml: AreaOverride  (aus allGDS)
+#  Deckt die GUI-Erweiterung ab, mit der ein manuell im Feld "Area"
+#  korrigierter Wert die dateinamen-basierte Ableitung uebersteuert
+#  (z.B. bei falschem Dateinamen-Format).
+# ============================================================
+class TestCreateXmlAreaOverride(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.tif_path = os.path.join(self.tmpdir, "2025_PLAINE_MORTE_DOP_2601_1136_LV95.tif")
+        with open(self.tif_path, "w") as f:
+            f.write("dummy")
+        self.xml_path = self.tif_path.rsplit(".", 1)[0] + ".xml"
+        self.meta = {
+            "Auftragstyp": "ram",
+            "Line_ID": ["20230820_0921_12501"],
+            "NoData": "0 0 0",
+        }
+
+    def tearDown(self):
+        for p in (self.tif_path, self.xml_path):
+            if os.path.exists(p):
+                os.unlink(p)
+        os.rmdir(self.tmpdir)
+
+    def _area_from_xml(self):
+        with open(self.xml_path, encoding="utf-8") as f:
+            content = f.read()
+        m = re.search(r"<Area>(.*?)</Area>", content)
+        return m.group(1) if m else None
+
+    def test_ohne_override_wird_area_aus_dateiname_abgeleitet(self):
+        allGDS.create_xml(self.tif_path, "SB_DOP", self.meta, cached_raster_attrs={})
+        self.assertEqual(self._area_from_xml(), "PLAINE_MORTE")
+
+    def test_mit_override_wird_dieser_verwendet(self):
+        meta = dict(self.meta, AreaOverride="KORRIGIERT")
+        allGDS.create_xml(self.tif_path, "SB_DOP", meta, cached_raster_attrs={})
+        self.assertEqual(self._area_from_xml(), "KORRIGIERT")
 
 
 # ============================================================

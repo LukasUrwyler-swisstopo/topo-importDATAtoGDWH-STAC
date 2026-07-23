@@ -925,6 +925,29 @@ class GDWHApp(tk.Tk):
                       ).grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
         r += 1
 
+        # Area – aus erster Datei im Quellordner abgeleitet, editierbar (falls
+        # Dateinamen-Format nicht passt und der Wert falsch abgeleitet wurde).
+        ttk.Label(sec, text="Area:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
+        self.area_var = tk.StringVar()
+        ttk.Entry(sec, textvariable=self.area_var
+                   ).grid(row=r, column=1, sticky="ew", padx=(8, 0), pady=3)
+        area_hint = ttk.Label(sec,
+            text="aus erster Datei im Quellordner abgeleitet – bei Bedarf korrigierbar",
+            font=("", 8))
+        area_hint.grid(row=r+1, column=1, sticky="w", padx=(8, 0))
+        self._dim_labels.append(area_hint)
+        r += 2
+
+        # TileKey – reine Diagnose-Vorschau (Beispiel aus der ersten Datei),
+        # nicht editierbar: TileKey wird pro Datei einzeln berechnet.
+        ttk.Label(sec, text="TileKey (Beispiel):", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
+        self.tilekey_preview_var = tk.StringVar()
+        self.tilekey_preview_lbl = ttk.Label(sec, textvariable=self.tilekey_preview_var, font=("", 9))
+        self.tilekey_preview_lbl.grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
+        self.tilekey_hint = ttk.Label(sec, font=("", 8))
+        self.tilekey_hint.grid(row=r+1, column=1, sticky="w", padx=(8, 0))
+        r += 2
+
         # CustomAttribute – automatisch per GDS, kein Dropdown
         ttk.Label(sec, text="CustomAttribute:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="nw", pady=3)
         ca_row = ttk.Frame(sec)
@@ -1031,6 +1054,7 @@ class GDWHApp(tk.Tk):
         self.if_checkbtn.grid(row=0, column=3, padx=(4, 0), pady=3)
         self._check_format_btns.append(self.if_checkbtn)
         self.if_var.trace_add("write", lambda *_: self._reset_check_btn(self.if_checkbtn))
+        self.if_var.trace_add("write", lambda *_: self._refresh_area_tilekey_preview())
         self.if_hint = ttk.Label(self.if_frame, font=("", 8),
             text="Data-Input Path wird automatisch ergänzt:  INPUT_FOLDER\\<HHMM der Line_ID>")
         self.if_hint.grid(row=1, column=1, sticky="w", padx=(8, 0))
@@ -1053,6 +1077,7 @@ class GDWHApp(tk.Tk):
         self.quelle_checkbtn.grid(row=0, column=3, padx=(4, 0), pady=3)
         self._check_format_btns.append(self.quelle_checkbtn)
         self.quelle_var.trace_add("write", lambda *_: self._reset_check_btn(self.quelle_checkbtn))
+        self.quelle_var.trace_add("write", lambda *_: self._refresh_area_tilekey_preview())
         self.quelle_hint = ttk.Label(self.quelle_frame, font=("", 8))
         self.quelle_hint.grid(row=1, column=1, sticky="w", padx=(8, 0))
         self._dim_labels.append(self.quelle_hint)
@@ -1304,6 +1329,35 @@ class GDWHApp(tk.Tk):
                 try: lbl.configure(foreground=T["hint"])
                 except tk.TclError: pass
 
+        self._refresh_area_tilekey_preview()
+
+    # ── Area / TileKey Live-Vorschau ─────────────────────────────────────────
+    _TILEKEY_RE = re.compile(r'^\d{4}_\d{4}$')
+
+    def _refresh_area_tilekey_preview(self):
+        """Aktualisiert die Area-/TileKey-Vorschaufelder anhand der ersten
+        passenden Datei im aktuellen Quellordner. Wird bei GDS-Wechsel und bei
+        Aenderung des Quellordner-Pfads aufgerufen (siehe _build_paths)."""
+        if not hasattr(self, "area_var"):
+            return  # Widgets noch nicht aufgebaut
+
+        gds = self.gds_var.get()
+        src = (self.if_var.get() if gds == "SB_DOP_16" else self.quelle_var.get()).strip().strip('"')
+
+        self.area_var.set(self._extract_area_from_source(src, gds))
+
+        tilekey, _fn = self._extract_tilekey_from_source(src, gds)
+        self.tilekey_preview_var.set(tilekey)
+
+        T = DARK if self._dark else LIGHT
+        if gds == "SB_DSM" or self._TILEKEY_RE.match(tilekey):
+            self.tilekey_preview_lbl.configure(foreground=T["fg"])
+            self.tilekey_hint.config(text="")
+        else:
+            self.tilekey_preview_lbl.configure(foreground=T["err"])
+            self.tilekey_hint.config(text="TileKey falsch – Dateinamen-Format prüfen und ändern",
+                                      foreground=T["err"])
+
     # ── Check - NameFormat ───────────────────────────────────────────────────
     def _set_check_btn_state(self, btn, state):
         """state: 'idle' (amber), 'ok' (grün) oder 'err' (rot)."""
@@ -1456,6 +1510,12 @@ class GDWHApp(tk.Tk):
             meta["allAreaLineIDs"] = self.all_area_w.get_ids()
         if gds != "SB_DSM_PUNKTWOLKE":
             meta["NoData"] = self._get_nodata()
+        # Area-Override nur uebernehmen, wenn das Feld einen echten Wert enthaelt
+        # (kein Platzhalter wie "—  (Ordner nicht gefunden)") - sonst leitet
+        # jedes Sub-Script den Area-Namen wie bisher selbst pro Datei ab.
+        area_override = self.area_var.get().strip()
+        if area_override and not area_override.startswith("—"):
+            meta["AreaOverride"] = area_override
         return meta
 
     # ── Log ───────────────────────────────────────────────────────────────────
@@ -1705,7 +1765,7 @@ class GDWHApp(tk.Tk):
         _tilekey, _tilekey_file = self._extract_tilekey_from_source(quelle, gds)
         dlg = SicherheitsCheckDialog(
             self, gds, meta, quelle_display, ziel,
-            area=self._extract_area_from_source(quelle, gds),
+            area=meta.get("AreaOverride") or self._extract_area_from_source(quelle, gds),
             stac_dt=self._format_stac_datetime(_first_lid),
             tilekey=_tilekey, tilekey_file=_tilekey_file,
             dark=self._dark,
@@ -1798,6 +1858,11 @@ class GDWHApp(tk.Tk):
             tmp.close()
             env = os.environ.copy()
             env["PYTHONHOME"] = _detect_python_home(self._osgeo_python)
+            # Verhindert, dass private User-Site-Packages (z.B. eine per pip
+            # installierte NumPy-Version) die OSGeo4W-eigenen, dazu passenden
+            # Paketversionen ueberschatten - siehe Vorfall 22.7. (ABI-Konflikt
+            # NumPy 2.x vs. gegen NumPy 1.x kompilierte osgeo.gdal_array-Bindung).
+            env["PYTHONNOUSERSITE"] = "1"
             print(f"[Subprocess] {self._osgeo_python}\n", flush=True)
             proc = subprocess.Popen(
                 [self._osgeo_python, RUNNER_SCRIPT, tmp.name],
