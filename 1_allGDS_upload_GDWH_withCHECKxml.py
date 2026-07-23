@@ -6,6 +6,7 @@ import hashlib
 import shutil
 import time
 import traceback
+import numpy as np
 from osgeo import gdal
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -238,14 +239,19 @@ def extract_tile_lv95(filename):
 def get_nodata_value(filename, GDS, meta_info):
     """
     Gibt den NoData-Wert zurück:
-    - SB_DSM + '_hillshade_' im Dateinamen -> immer '255 255 255'
+    - SB_DSM + '_hillshade_' im Dateinamen -> immer '255' (1-Band Grayscale)
     - SB_DSM + '_DSM_' im Dateinamen       -> immer '-3.4028235e+38'
     - Alle anderen GDS                     -> aus meta_info["NoData"]
     """
     if GDS == "SB_DSM":
         fn_lower = filename.lower()
         if "_hillshade_" in fn_lower:
-            return "255 255 255"
+            # Hillshade ist 1-Band Grayscale (Type=Byte, ColorInterp=Gray) -
+            # ein einzelner Wert wird von tag_nodata_on_raster/tag_mask_on_raster
+            # automatisch auf die tatsaechliche Bandanzahl expandiert. Mit einem
+            # fixen "255 255 255" wuerde das bei 1 Band nie zutreffen (3 != 1)
+            # und NoData-Tag sowie Maske wuerden stillschweigend uebersprungen.
+            return "255"
         elif "_dsm_" in fn_lower:
             return "-3.4028235e+38"
     return meta_info.get("NoData", "")
@@ -279,6 +285,92 @@ def tag_nodata_on_raster(file_path, nodata_str):
     finally:
         ds.FlushCache()
         ds = None
+
+
+def _compute_nodata_mask(ds, nodata_str):
+    """
+    Liest alle Baender und berechnet die vollstaendige Gueltigkeits-Maske
+    im Speicher (0=NoData, 255=gueltig). Ein Pixel gilt nur dann als
+    ungueltig, wenn ALLE Baender ihrem jeweiligen NoData-Wert entsprechen
+    (analog gdalwarp-Verhalten). Es wird dabei NICHTS auf der Platte
+    veraendert - schlaegt das Lesen fehl, bleibt die Datei unberuehrt.
+    Gibt None zurueck, wenn die Anzahl NoData-Werte nicht zu den Baendern passt.
+    """
+    values = nodata_str.split()
+    n_bands = ds.RasterCount
+    if len(values) == 1:
+        values = values * n_bands
+    if len(values) != n_bands:
+        log(f"[WARNUNG] Maske: {len(values)} Wert(e) fuer {n_bands} Baender "
+            f"- uebersprungen.")
+        return None
+    nodata_values = [float(v) for v in values]
+
+    x_size, y_size = ds.RasterXSize, ds.RasterYSize
+    full_mask = np.empty((y_size, x_size), dtype=np.uint8)
+
+    chunk_rows = 1000
+    for y_off in range(0, y_size, chunk_rows):
+        rows = min(chunk_rows, y_size - y_off)
+        is_nodata = np.ones((rows, x_size), dtype=bool)
+        for i in range(1, n_bands + 1):
+            band_arr = ds.GetRasterBand(i).ReadAsArray(0, y_off, x_size, rows)
+            is_nodata &= (band_arr == nodata_values[i - 1])
+        full_mask[y_off:y_off + rows, :] = np.where(is_nodata, 0, 255).astype(np.uint8)
+
+    return full_mask
+
+
+def tag_mask_on_raster(file_path, nodata_str):
+    """
+    Erzeugt zusaetzlich zum NoData-Tag eine interne per-Dataset-Maske
+    (GDAL_TIFF_INTERNAL_MASK, 1-bit DEFLATE, im TIFF selbst gespeichert).
+
+    Hintergrund: Bei der COG-Ableitung im GDWH-Catalog wird JPEG-Kompression
+    verwendet. Der COG-Treiber schreibt bei JPEG (verlustbehaftet) keinen
+    NoData-Wert, da ein exakter Pixelwert nach der Kompression nicht mehr
+    garantiert ist. Eine interne Maske bleibt dagegen verlustfrei erhalten
+    und wird vom COG-Treiber auch bei JPEG korrekt uebernommen.
+
+    Fail-safe: die Maske wird zuerst vollstaendig im Speicher berechnet
+    (_compute_nodata_mask). Erst bei Erfolg wird CreateMaskBand() aufgerufen
+    und geschrieben. Schlaegt die Berechnung fehl (z.B. GDAL/NumPy-Fehler),
+    bleibt die Datei unveraendert - es kann keine halbfertige "alles
+    ungueltig"-Maske mehr auf der Platte landen (siehe Vorfall 22.7.).
+    """
+    values = nodata_str.split()
+    if not values:
+        return
+
+    gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+    try:
+        ds = gdal.Open(file_path, gdal.GA_Update)
+    except Exception as e:
+        log(f"[WARNUNG] Maske: '{os.path.basename(file_path)}' konnte nicht zum Schreiben geoeffnet werden: {e}")
+        return
+    if ds is None:
+        log(f"[WARNUNG] Maske: '{os.path.basename(file_path)}' konnte nicht zum Schreiben geoeffnet werden.")
+        return
+
+    try:
+        full_mask = _compute_nodata_mask(ds, nodata_str)
+        if full_mask is None:
+            return
+
+        ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+        mask_band = ds.GetRasterBand(1).GetMaskBand()
+        y_size, x_size = full_mask.shape
+        chunk_rows = 1000
+        for y_off in range(0, y_size, chunk_rows):
+            rows = min(chunk_rows, y_size - y_off)
+            mask_band.WriteArray(full_mask[y_off:y_off + rows, :], 0, y_off)
+    except Exception as e:
+        log(f"[FEHLER] Maske NICHT gesetzt fuer '{os.path.basename(file_path)}': {e} "
+            f"(Datei sollte unveraendert sein, Fehler vor dem Schreiben abgefangen)")
+    finally:
+        ds.FlushCache()
+        ds = None
+
 
 # ****************************** Sicherheits-Checker ******************************
 def preview_xml_attributes(src, GDS, meta_info):
@@ -353,8 +445,10 @@ def preview_xml_attributes(src, GDS, meta_info):
 def create_xml(file_path, GDS, meta_info, cached_raster_attrs=None):
     filename = os.path.basename(file_path)
 
-    # AREA: robust aus Dateiname extrahieren
-    AOI = extract_area(filename, GDS)
+    # AREA: robust aus Dateiname extrahieren - ausser die GUI liefert eine
+    # manuell im Meta-Informationen-Feld "Area" gesetzte/korrigierte
+    # Ueberschreibung (z.B. weil das Dateinamen-Format nicht passt).
+    AOI = meta_info.get("AreaOverride") or extract_area(filename, GDS)
 
     root = ET.Element("MetaObject", {"xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance"})
 
@@ -577,6 +671,7 @@ def files_in_order(src, out, GDS, meta):
                 nodata_str = get_nodata_value(fn, GDS, meta)
                 if nodata_str:
                     tag_nodata_on_raster(fp, nodata_str)
+                    tag_mask_on_raster(fp, nodata_str)
             update_file_csv(out, fp, GDS)
         except Exception as e:
             # OPT: Vollständiger Traceback im Log für einfacheres Debugging

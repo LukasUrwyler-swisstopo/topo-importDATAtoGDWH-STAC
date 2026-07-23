@@ -57,7 +57,13 @@ Hauptscript starten  (GUI)
         │
         ├─ Quellordner bereinigen  (nur Nutzdaten behalten – Whitelist pro GDS)
         ├─ XML-Generierung  (pro .tif / .laz)
-        ├─ NoData-Tag im TIFF setzen  (GDAL SetNoDataValue, pro Band – bleibt bei späterer COG-Ableitung erhalten)
+        ├─ NoData-Tag im TIFF setzen  (GDAL SetNoDataValue, pro Band)
+        ├─ Interne Maske im TIFF setzen  (GDAL_TIFF_INTERNAL_MASK, 1-bit DEFLATE –
+        │   bleibt auch bei späterer JPEG-COG-Ableitung erhalten, da NoData bei
+        │   verlustbehafteter Kompression vom COG-Treiber ignoriert wird.
+        │   Fail-safe: Maske wird zuerst vollständig im Speicher berechnet,
+        │   erst bei Erfolg geschrieben – kein Risiko einer halbfertigen
+        │   "alles ungültig"-Maske bei einem GDAL/NumPy-Fehler.)
         ├─ Daten ins Bucket kopieren  (NV-Ordner; PUNKTWOLKE: +PrecalculatedFormats)
         └─ files.csv erstellen  (MD5-Hash, TileKey, WKT-Footprint)
                 │
@@ -106,18 +112,28 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 
 | Parameter | Beschreibung | Mögliche Werte |
 |-----------|-------------|----------------|
-| `Auftragstyp` | Art des Auftrags | `kry` / `ram` / `bim` / `mom` / `wam` |
-| `CustomAttribute` | Beschreibung des Datenprodukts | siehe Auswahlliste |
-| `Line_ID` | Befliegungslinien-IDs | `["YYYYMMDD_HHMM_QQQQQ", ...]` – wird von der GUI automatisch chronologisch sortiert (älteste zuoberst) |
-| `allAreaLineIDs` | Alle LineIDs des Gebiets *(nur SB_DOP_16)* | `["YYYYMMDD_HHMM_QQQQQ", ...]` |
-| `NoData` | NoData-Wert – wird ins XML geschrieben **und** direkt als GDAL-Tag auf jedes Band des TIFF gesetzt (`SetNoDataValue`) | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
-| `TerrainModel` | Verwendetes Geländemodell | siehe Auswahlliste |
-| `SourceReferenceSystem` | Koordinatensystem | `"(EPSG:2056) CH1903+ / LV95_LN02"` *(fix)* |
-| `CameraSystem` | Kamerasystem | `"Leica ADS100"` / `"Leica ADS80"` / `"Leica DMC-4"` |
+| Reihenfolge im GUI | Parameter | Beschreibung | Mögliche Werte |
+|:---:|-----------|-------------|----------------|
+| 1 | `Auftragstyp` | Art des Auftrags | `kry` / `ram` / `bim` / `mom` / `wam` |
+| 2 | `Area` | AOI-Name – wird live aus der ersten passenden Datei im Quellordner abgeleitet, ist aber **editierbar**. Ein hier gesetzter Wert überschreibt für den ganzen Lauf die pro-Datei-Ableitung aus dem Dateinamen (`extract_area()`) – wichtig als Absicherung, falls das Dateinamen-Format nicht passt und "Check - NameFormat" übersehen wurde | Freitext, z.B. `PLAINE_MORTE` |
+| 3 | *(TileKey-Vorschau)* | Reine Diagnoseanzeige (nicht editierbar): TileKey-Beispiel aus der ersten Datei. Erscheint erst, sobald ein gültiger Quellordner gesetzt ist. Wird pro Datei einzeln neu berechnet, nicht überschreibbar. Rote Schrift + Hinweis, wenn das Format nicht `XXXX_YYYY` entspricht (ausser SB_DSM, dort fix `1000`) | – |
+| 4 | `NoData` | NoData-Wert – wird ins XML geschrieben, als GDAL-Tag auf jedes Band des TIFF gesetzt (`SetNoDataValue`) **und** zusätzlich als interne per-Dataset-Maske geschrieben (`tag_mask_on_raster`, siehe unten) | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
+| 5 | `TerrainModel` | Verwendetes Geländemodell | siehe Auswahlliste |
+| 6 | `CameraSystem` | Kamerasystem | `"Leica ADS100"` / `"Leica ADS80"` / `"Leica DMC-4"` |
+| 7 | `SourceReferenceSystem` | Koordinatensystem | `"(EPSG:2056) CH1903+ / LV95_LN02"` *(fix)* |
+| 8 | `CustomAttribute` | Beschreibung des Datenprodukts | siehe Auswahlliste |
+| 9 | `Line_ID` | Befliegungslinien-IDs | `["YYYYMMDD_HHMM_QQQQQ", ...]` – wird von der GUI automatisch chronologisch sortiert (älteste zuoberst) |
+| 10 | `allAreaLineIDs` | Alle LineIDs des Gebiets *(nur SB_DOP_16, direkt nach Line_ID)* | `["YYYYMMDD_HHMM_QQQQQ", ...]` |
 
-> **SB_DSM:** NoData wird automatisch gesetzt (`"255 255 255"` für Hillshade, `"-3.4028235e+38"` für DSM-Raster).
+> **IMPORT STARTEN** bleibt deaktiviert, bis Quellordner, Zielordner, Area, NoData *(ausser SB_DSM/SB_DSM_PUNKTWOLKE)*, TerrainModel, CameraSystem und Line_ID *(bzw. zusätzlich allAreaLineIDs bei SB_DOP_16)* alle einen Eintrag haben.
+
+> **SB_DSM:** NoData wird automatisch gesetzt (`"255"` für Hillshade [1-Band Grayscale], `"-3.4028235e+38"` für DSM-Raster).
 > 
 > **SB_DSM_PUNKTWOLKE:** kein NoData-Value.
+>
+> **Warum zusätzlich eine interne Maske?** Die spätere COG-Ableitung im GDWH-Catalog nutzt JPEG-Kompression (verlustbehaftet). Der GDAL-COG-Treiber schreibt dabei bewusst **keinen** NoData-Wert, da ein exakter Pixelwert nach der Kompression nicht mehr garantiert ist. Eine interne per-Dataset-Maske (`GDAL_TIFF_INTERNAL_MASK`, 1-bit DEFLATE) bleibt dagegen verlustfrei erhalten und wird vom COG-Treiber auch bei JPEG korrekt übernommen – daher setzt `tag_mask_on_raster()` diese zusätzlich zum klassischen NoData-Tag.
+>
+> **Fail-safe-Design (wichtig, siehe Vorfall 22.7.2026):** Ein GDAL/NumPy-ABI-Konflikt in der Ausführungsumgebung liess `ReadAsArray()` mit einer Exception abbrechen, *nachdem* `CreateMaskBand()` bereits eine leere (per Default komplett ungültige) Maske angelegt hatte – Ergebnis war ein COG, der auf map.geo.admin.ch vollständig transparent gerendert wurde. Seither wird die Maske zuerst **vollständig im Speicher** berechnet (`_compute_nodata_mask`) und `CreateMaskBand()`/`WriteArray()` erst bei garantiertem Erfolg aufgerufen. Schlägt die Berechnung fehl, bleibt die TIFF-Datei unverändert. Zusätzlich setzt die GUI beim OSGeo4W-Subprocess `PYTHONNOUSERSITE=1`, damit private User-Site-Packages (z.B. eine per `pip install --user` installierte NumPy-Version) nicht die zur OSGeo4W-`gdal_array`-Bindung passende NumPy-Version überschatten.
 > 
 > **`Auftragstyp`:**
 > 
@@ -204,6 +220,8 @@ python -m pytest test_functions.py -v   # falls pytest installiert
 | `TestExtractTileLv95AllGDS` | `extract_tile_lv95` | Script 1 |
 | `TestExtractTileDop16` | `extract_tile` | Script 2_2 |
 | `TestGetNodataValue` | `get_nodata_value` | Script 1 |
+| `TestTagMaskOnRaster` | `tag_mask_on_raster` (Masken-Logik + Fail-Safe-Verhalten, GDAL via Fake-Dataset simuliert) | Script 1 |
+| `TestCreateXmlAreaOverride` | `create_xml` – Area-Override aus GUI-Feld übersteuert dateinamen-basierte Ableitung | Script 1 |
 | `TestCsvAppend` | `_csv_append` | Script 1 |
 | `TestExtractLineId` | `extract_line_id` | Script 2_1 |
 | `TestParseUndFormatKombiniert` | Parse + Format End-zu-End | Script 1 |
