@@ -519,7 +519,7 @@ class SicherheitsCheckDialog(tk.Toplevel):
             nodata = "keine NoData nötig"
         else:
             nodata = meta.get("NoData", "")
-        _kv(sec1, "NoData:", nodata)
+        _kv(sec1, "NoData der Quelldaten:", nodata)
         _kv(sec1, "TerrainModel:", meta.get("TerrainModel", ""))
         _kv(sec1, "CameraSystem:", meta.get("CameraSystem", ""))
 
@@ -959,7 +959,7 @@ class GDWHApp(tk.Tk):
         r += 2
 
         # NoData
-        self.nodata_lbl  = ttk.Label(sec, text="NoData:", font=("Segoe UI", 9, "bold"))
+        self.nodata_lbl  = ttk.Label(sec, text="NoData der Quelldaten:", font=("Segoe UI", 9, "bold"))
         self.nodata_lbl.grid(row=r, column=0, sticky="w", pady=3)
         self.nodata_var  = tk.StringVar()
         self.nodata_cb   = ttk.Combobox(sec, textvariable=self.nodata_var,
