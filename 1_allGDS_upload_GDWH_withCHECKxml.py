@@ -708,7 +708,14 @@ def files_in_order(src, out, GDS, meta):
                     # noData-Darstellung (Vorfall 23.7.2026). Fuer Hillshade bleibt
                     # die Maske wie gehabt bestehen.
                     is_sb_dsm_raster = GDS == "SB_DSM" and "_hillshade_" not in fn.lower()
-                    if not is_sb_dsm_raster:
+                    # SB_DOP mit vorgeschalteter Vorkorrektur (3_fix_false_nodata_dop.py,
+                    # via GUI-Option): die Flag Mask wurde dort bereits direkt beim
+                    # Korrigieren der Pixel geschrieben (spart einen zusaetzlichen
+                    # vollstaendigen Lese-/Schreibdurchgang pro Tile) - hier nicht
+                    # nochmals berechnen. Der NoData-Tag oben wird trotzdem wie
+                    # gehabt gesetzt.
+                    mask_already_set = GDS == "SB_DOP" and meta.get("FixFalseNodata")
+                    if not is_sb_dsm_raster and not mask_already_set:
                         tag_mask_on_raster(fp, nodata_str)
             update_file_csv(out, fp, GDS)
         except Exception as e:

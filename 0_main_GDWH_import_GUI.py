@@ -16,6 +16,7 @@ LOG_DIR     = os.path.join(SCRIPT_DIR, "logs")
 SCRIPT_1    = os.path.join(SCRIPT_DIR, "1_allGDS_upload_GDWH_withCHECKxml.py")
 SCRIPT_21   = os.path.join(SCRIPT_DIR, "2_1_SB_DOP_16_FOLDERorganize_by_lineID.py")
 SCRIPT_22   = os.path.join(SCRIPT_DIR, "2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py")
+SCRIPT_3    = os.path.join(SCRIPT_DIR, "3_fix_false_nodata_dop.py")
 RUNNER_SCRIPT = os.path.join(SCRIPT_DIR, "_osgeo_runner.py")
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "_gdwh_config.json")
 
@@ -520,6 +521,9 @@ class SicherheitsCheckDialog(tk.Toplevel):
         else:
             nodata = meta.get("NoData", "")
         _kv(sec1, "NoData der Quelldaten:", nodata)
+        if gds == "SB_DOP":
+            _kv(sec1, "Falsche NoData-Pixel vorkorrigieren:",
+                "Ja" if meta.get("FixFalseNodata") else "Nein")
         _kv(sec1, "TerrainModel:", meta.get("TerrainModel", ""))
         _kv(sec1, "CameraSystem:", meta.get("CameraSystem", ""))
 
@@ -968,6 +972,18 @@ class GDWHApp(tk.Tk):
         self.nodata_auto = ttk.Label(sec, font=("", 8), justify="left")
         self.nodata_auto.grid(row=r+1, column=1, sticky="w", padx=(8, 0))
         self._dim_labels.append(self.nodata_auto)
+
+        # Falsche NoData-Pixel vorkorrigieren – nur relevant für GDS "SB_DOP":
+        # korrigiert einzelne/kleine 0,0,0- bzw. 255,255,255-Pixelgruppen
+        # INNERHALB der Nutzdaten (radiometrischer Zufallstreffer), bevor die
+        # eigentliche Maskenberechnung (Script 1) startet. Echte grosse
+        # NoData-Flächen bleiben unverändert. NoData-Zielwert wird aus der
+        # Auswahl oben (self.nodata_var) übernommen.
+        self.fix_nodata_var = tk.BooleanVar(value=True)
+        self.fix_nodata_cb = ttk.Checkbutton(
+            sec, variable=self.fix_nodata_var,
+            text="Falsche NoData-Pixel in Nutzdaten vorkorrigieren")
+        self.fix_nodata_cb.grid(row=r, column=2, sticky="w", padx=(16, 0), pady=3)
         r += 2
 
         # TerrainModel
@@ -1300,6 +1316,7 @@ class GDWHApp(tk.Tk):
         if gds == "SB_DSM":
             self.nodata_lbl.grid_remove()
             self.nodata_cb.grid_remove()
+            self.fix_nodata_cb.grid_remove()
             self.nodata_auto.config(
                 text="NoData wird automatisch gesetzt:\n"
                      "  '_hillshade_' im Dateinamen  →  '255 255 255'\n"
@@ -1308,6 +1325,7 @@ class GDWHApp(tk.Tk):
         elif gds == "SB_DSM_PUNKTWOLKE":
             self.nodata_lbl.grid_remove()
             self.nodata_cb.grid_remove()
+            self.fix_nodata_cb.grid_remove()
             self.nodata_auto.config(text="NoData: keine NoData nötig (Punktwolken / LAZ)")
             self.nodata_auto.grid()
         else:
@@ -1318,6 +1336,12 @@ class GDWHApp(tk.Tk):
             if self.nodata_var.get() not in opts:
                 self.nodata_var.set(opts[0])
             self.nodata_cb.grid()
+            # Vorkorrektur falsche NoData-Pixel: nur für SB_DOP (Mosaik, 8BIT
+            # RGB) sinnvoll, nicht für SB_DOP_16 (Einzellinien, eigene Radiometrie).
+            if gds == "SB_DOP":
+                self.fix_nodata_cb.grid()
+            else:
+                self.fix_nodata_cb.grid_remove()
 
         # INPUT_FOLDER (SB_DOP_16) vs. Data-Input Path (andere GDS)
         self.if_frame.grid()         if is_d16 else self.if_frame.grid_remove()
@@ -1533,6 +1557,8 @@ class GDWHApp(tk.Tk):
             meta["allAreaLineIDs"] = self.all_area_w.get_ids()
         if gds != "SB_DSM_PUNKTWOLKE":
             meta["NoData"] = self._get_nodata()
+        if gds == "SB_DOP":
+            meta["FixFalseNodata"] = bool(self.fix_nodata_var.get())
         # Area-Override nur uebernehmen, wenn das Feld einen echten Wert enthaelt
         # (kein Platzhalter wie "—  (Ordner nicht gefunden)") - sonst leitet
         # jedes Sub-Script den Area-Namen wie bisher selbst pro Datei ab.
@@ -1896,13 +1922,15 @@ class GDWHApp(tk.Tk):
     def _exec_with_osgeo(self, action, gds, meta, quelle, ziel):
         """Führt Script 1 oder Script 2_2 via OSGeo4W Python als Subprocess aus."""
         cfg = {
-            "action":    action,
-            "gds":       gds,
-            "meta_info": meta,
-            "quelle":    quelle,
-            "ziel":      ziel,
-            "script_1":  SCRIPT_1,
-            "script_22": SCRIPT_22,
+            "action":           action,
+            "gds":              gds,
+            "meta_info":        meta,
+            "quelle":           quelle,
+            "ziel":             ziel,
+            "script_1":         SCRIPT_1,
+            "script_22":        SCRIPT_22,
+            "script_3":         SCRIPT_3,
+            "fix_false_nodata": bool(meta.get("FixFalseNodata")),
         }
         tmp = tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False, encoding="utf-8"

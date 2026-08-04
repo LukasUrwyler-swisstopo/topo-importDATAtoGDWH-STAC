@@ -31,6 +31,7 @@ Die Scripts automatisieren den gesamten Prozess von der Datenvorbereitung bis zu
 | `1_allGDS_upload_GDWH_withCHECKxml.py` | Sub-Script für `SB_DOP`, `SB_DSM`, `SB_DSM_PUNKTWOLKE` | (direkt möglich, Working Part anpassen) |
 | `2_1_SB_DOP_16_FOLDERorganize_by_lineID.py` | Sub-Script – prüft die Line_ID im Quellordner, bereinigt Altdateien und sortiert 16BIT-DOP-Dateien nach LineID in Unterordner | (direkt möglich, Pfad anpassen) |
 | `2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py` | Sub-Script für `SB_DOP_16` | (direkt möglich, Working Part anpassen) |
+| `3_fix_false_nodata_dop.py` | Sub-Script (optional, nur `SB_DOP`) – korrigiert falsche NoData-Pixel (einzelne/kleine 0,0,0- bzw. 255,255,255-Gruppen innerhalb der Nutzdaten) und setzt dabei gleich die Flag Mask; läuft **in-place** auf den Quelldateien, **vor** Script 1 | ✓ (eigenständiges CLI, siehe Skript-Docstring) |
 | `_osgeo_runner.py` | **Interner Subprocess-Runner** – wird von der GUI via OSGeo4W Python aufgerufen; nicht direkt starten | – |
 | `test_functions.py` | **Unit-Tests** – prüft die reinen Python-Funktionen ohne externe Abhängigkeiten (kein OSGeo4W nötig) | ✓ (normales Python) |
 
@@ -55,6 +56,11 @@ Hauptscript starten  (GUI)
         │
         ├─ Sicherheitscheck  (Dialog: Metadaten, Pfade, Kontrollfragen bestätigen)
         │
+        ├─ [SB_DOP only, optional – Checkbox]  Script 3: falsche NoData-Pixel
+        │   (kleine 0,0,0- / 255,255,255-Gruppen INNERHALB der Nutzdaten)
+        │   korrigieren + Flag Mask direkt setzen – in-place auf den
+        │   Quelldateien, noch vor der Quellordner-Bereinigung
+        │
         ├─ Quellordner bereinigen  (nur Nutzdaten behalten – Whitelist pro GDS)
         ├─ XML-Generierung  (pro .tif / .laz)
         ├─ NoData-Tag im TIFF setzen  (GDAL SetNoDataValue, pro Band)
@@ -64,8 +70,11 @@ Hauptscript starten  (GUI)
         │   Fail-safe: Maske wird zuerst vollständig im Speicher berechnet,
         │   erst bei Erfolg geschrieben – kein Risiko einer halbfertigen
         │   "alles ungültig"-Maske bei einem GDAL/NumPy-Fehler.
-        │   AUSNAHME: SB_DSM DSM-Raster [nicht Hillshade] – dort NUR NoData-Tag,
-        │   keine Maske, siehe Vorfall 23.7.2026.)
+        │   AUSNAHME 1: SB_DSM DSM-Raster [nicht Hillshade] – dort NUR NoData-Tag,
+        │   keine Maske, siehe Vorfall 23.7.2026.
+        │   AUSNAHME 2: SB_DOP mit aktivierter Vorkorrektur – die Maske wurde
+        │   bereits von Script 3 gesetzt und wird hier übersprungen; der
+        │   NoData-Tag wird trotzdem wie gehabt gesetzt.)
         ├─ Daten ins Bucket kopieren  (NV-Ordner; PUNKTWOLKE: +PrecalculatedFormats)
         └─ files.csv erstellen  (MD5-Hash, TileKey, WKT-Footprint)
                 │
@@ -76,13 +85,13 @@ Hauptscript starten  (GUI)
         GDWH Import  →  STAC-Integration (automatisch)
 ```
 
-> **Hinweis Verarbeitungsreihenfolge:** NoData-Tag und Maske werden auf den Dateien im **Quellordner** gesetzt (bevor `create_and_copy_order()` sie ins Bucket kopiert) – die Kopie im Bucket ist danach identisch zur (bereits veränderten) Quelldatei. Die Original-Rasterdateien auf dem Quelllaufwerk werden also direkt mitverändert, nicht nur eine Kopie im Bucket.
+> **Hinweis Verarbeitungsreihenfolge:** NoData-Tag und Maske werden auf den Dateien im **Quellordner** gesetzt (bevor `create_and_copy_order()` sie ins Bucket kopiert) – die Kopie im Bucket ist danach identisch zur (bereits veränderten) Quelldatei. Die Original-Rasterdateien auf dem Quelllaufwerk werden also direkt mitverändert, nicht nur eine Kopie im Bucket. Bei SB_DOP mit aktivierter Vorkorrektur (Script 3) gilt das bereits einen Schritt früher: auch die Pixelwerte selbst werden in-place im Quellordner korrigiert, bevor Script 1 überhaupt startet.
 
 ### GDS-Routing
 
 | GDS | Sub-Scripts |
 |-----|-------------|
-| `SB_DOP` | Script 1 |
+| `SB_DOP` | *(optional, Checkbox)* Script 3 → Script 1 |
 | `SB_DOP_16` | Script 2_1 → Script 2_2 |
 | `SB_DSM` | Script 1 |
 | `SB_DSM_PUNKTWOLKE` | Script 1 |
@@ -122,6 +131,7 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 | 2 | `Area` | AOI-Name – wird live aus der ersten passenden Datei im Quellordner abgeleitet, ist aber **editierbar**. Ein hier gesetzter Wert überschreibt für den ganzen Lauf die pro-Datei-Ableitung aus dem Dateinamen (`extract_area()`) – wichtig als Absicherung, falls das Dateinamen-Format nicht passt und "Check - NameFormat" übersehen wurde | Freitext, z.B. `PLAINE_MORTE` |
 | 3 | *(TileKey-Vorschau)* | Reine Diagnoseanzeige (nicht editierbar): TileKey-Beispiel aus der ersten Datei. Erscheint erst, sobald ein gültiger Quellordner gesetzt ist. Wird pro Datei einzeln neu berechnet, nicht überschreibbar. Rote Schrift + Hinweis, wenn das Format nicht `XXXX_YYYY` entspricht (ausser SB_DSM, dort fix `1000`) | – |
 | 4 | `NoData` | NoData-Wert – für SB_DOP/SB_DOP_16 dient der hier gewählte Wert nur noch als **Quellwert für die Maskenberechnung** (`tag_mask_on_raster`, siehe unten). Der tatsächlich als GDAL-Tag (`SetNoDataValue`) **und** im XML `<NoData>` geschriebene Wert wird immer auf `"0 0 0"` / `"0 0 0 0"` normalisiert (`normalize_nodata_for_output`, siehe unten) | DOP 8BIT RGB: `"0 0 0"` / `"255 255 255"` , DOP 16BIT NRGB: `"0 0 0 0"` / `"65535 65535 65535 65535"` |
+| 4a | `FixFalseNodata` *(nur SB_DOP, Checkbox neben NoData)* | "Falsche NoData-Pixel in Nutzdaten vorkorrigieren" – siehe eigener Abschnitt [Vorkorrektur falscher NoData-Pixel](#vorkorrektur-falscher-nodata-pixel-sb_dop-optional) unten. Standardmässig **aktiviert** | `True` / `False` |
 | 5 | `TerrainModel` | Verwendetes Geländemodell | siehe Auswahlliste |
 | 6 | `CameraSystem` | Kamerasystem | `"Leica ADS100"` / `"Leica ADS80"` / `"Leica DMC-4"` |
 | 7 | `SourceReferenceSystem` | Koordinatensystem | `"(EPSG:2056) CH1903+ / LV95_LN02"` *(fix)* |
@@ -140,6 +150,8 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 > **Ausnahme SB_DSM DSM-Raster (nicht Hillshade, Vorfall 23.7.2026):** Hier wird `tag_mask_on_raster()` bewusst **nicht** aufgerufen – nur der klassische NoData-Tag wird gesetzt (wie vor Einführung der Maske). Die Maske führte bei diesem Rasterformat zu falscher/inkonsistenter NoData-Darstellung im STAC-Kartenviewer und in QGIS (teils schwarze, teils weisse NoData-Pixel). Für SB_DSM-Hillshade bleibt die Maske weiterhin aktiv, da sie dort visuell korrekt ist.
 >
 > **NoData-Normalisierung bei SB_DOP/SB_DOP_16 auf 0 (Vorfall 23.7.2026, per Test verifiziert):** Wird im GUI `"weiss"` gewählt, entstand in der STAC-Pipeline dasselbe Problem wie oben, nur mit vertauschten Farben: Der externe VRT-Merge-Schritt (Patriks STAC-Pipeline) füllt Bounding-Box-Lücken zwischen Kacheln (Bereiche ganz ohne Quelldatei) mit dem XML-`<NoData>`-Wert – bei `"weiss"` also weiss. Innerhalb einer Kachel maskierte Pixel werden beim `gdal_translate`-Schritt dagegen unabhängig davon als 0 (schwarz) interpretiert. Resultat: zwei unterschiedliche NoData-Farben im selben Bild (weisse Lücken zwischen Kacheln, schwarze Maske innerhalb). Deshalb: `"weiss"`/`"schwarz"` im GUI bestimmt weiterhin, mit welchem Quellwert die Maske berechnet wird (muss dem tatsächlichen Pixelwert im Ausgangsmaterial entsprechen) – der geschriebene GDAL-Tag und der XML-`<NoData>`-Wert werden davon unabhängig **immer** auf `"0 0 0"` (bzw. `"0 0 0 0"`) normalisiert (`normalize_nodata_for_output()`), damit VRT-Lücken und interne Maske dieselbe Farbe ergeben. Die Original-Quelldateien werden dabei mitverändert (siehe Hinweis zur Verarbeitungsreihenfolge unten) – das gilt als Verbesserung der Quelldaten, nicht als Nebenwirkung.
+>
+> **`FixFalseNodata` (SB_DOP, optional):** Ist die Checkbox aktiv, läuft vor Script 1 zusätzlich Script 3 (`3_fix_false_nodata_dop.py`) **in-place** auf den Quelldateien. Es korrigiert einzelne/kleine Pixelgruppen mit dem gewählten NoData-Wert (0,0,0 bzw. 255,255,255) INNERHALB der Nutzdaten (radiometrischer Zufallstreffer, z.B. dunkle Schattenzonen oder überstrahlte Flächen), die sonst fälschlich als NoData maskiert würden. Echte, grosse NoData-Flächen (Kachelrand) bleiben unverändert. Details siehe [Vorkorrektur falscher NoData-Pixel](#vorkorrektur-falscher-nodata-pixel-sb_dop-optional) unten.
 >
 > **Fail-safe-Design (wichtig, siehe Vorfall 22.7.2026):** Ein GDAL/NumPy-ABI-Konflikt in der Ausführungsumgebung liess `ReadAsArray()` mit einer Exception abbrechen, *nachdem* `CreateMaskBand()` bereits eine leere (per Default komplett ungültige) Maske angelegt hatte – Ergebnis war ein COG, der auf map.geo.admin.ch vollständig transparent gerendert wurde. Seither wird die Maske zuerst **vollständig im Speicher** berechnet (`_compute_nodata_mask`) und `CreateMaskBand()`/`WriteArray()` erst bei garantiertem Erfolg aufgerufen. Schlägt die Berechnung fehl, bleibt die TIFF-Datei unverändert. Zusätzlich setzt die GUI beim OSGeo4W-Subprocess `PYTHONNOUSERSITE=1`, damit private User-Site-Packages (z.B. eine per `pip install --user` installierte NumPy-Version) nicht die zur OSGeo4W-`gdal_array`-Bindung passende NumPy-Version überschatten.
 > 
@@ -166,6 +178,24 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 | `SB_DOP_16` | `.tif` / `.tfw` | 16BIT NRGB; Dateien werden vor Import nach LineID in Unterordner sortiert |
 | `SB_DSM` | `.tif` / `.tfw` (DSM + Hillshade) | NoData automatisch per Dateiname; TileKey fix `1000` |
 | `SB_DSM_PUNKTWOLKE` | `.laz` | Kein NoData; Kopie in `PrecalculatedFormats\SB_DSM_PUNKTWOLKE` |
+
+---
+
+## Vorkorrektur falscher NoData-Pixel (SB_DOP, optional)
+
+DOP-Mosaike enthalten teils vereinzelte Pixel oder kleine Pixelgruppen, die durch die Radiometrie zufällig auf den NoData-Wert (0,0,0 bzw. 255,255,255) fallen – z.B. in sehr dunklen Schattenzonen oder überstrahlten Flächen –, obwohl sie eigentlich gültige Nutzdaten sind. Die normale Maskenberechnung (`_compute_nodata_mask`) vergleicht pro Pixel exakt gegen den NoData-Wert und würde solche Pixel fälschlich als NoData maskieren.
+
+`3_fix_false_nodata_dop.py` unterscheidet "echtes" von "falschem" NoData rein über die **Grösse der zusammenhängenden Pixelgruppe** (Connected-Component-Labeling, Schwelle 10'000 Pixel, Default): grosse Gruppen (Kachelrand) bleiben unverändert, kleine Gruppen werden um 3 Werte vom NoData-Wert weg verschoben (0,0,0 → 3,3,3 bzw. 255,255,255 → 252,252,252).
+
+Aktiviert man im GUI die Checkbox neben `NoData` (nur bei GDS `SB_DOP`, standardmässig **aktiviert**), läuft dieser Ablauf automatisch **vor** Script 1, in-place auf den Quelldateien:
+
+1. **Alte Flag Mask/NoData-Tag entfernen** (`strip_existing_mask`) – falls eine Datei bereits eine (falsch berechnete) Maske trägt, z.B. aus einem früheren Lauf.
+2. **Pixel korrigieren** wie oben beschrieben.
+3. **Flag Mask direkt mitschreiben** (`write_mask`) – die Maske ist rechnerisch äquivalent zu einer Neuberechnung auf der bereits korrigierten Datei (echtes NoData = Pixel, die nach der Korrektur weiterhin dem NoData-Wert entsprechen), wird aber im selben Schreibvorgang gesetzt statt in Script 1 per zusätzlichem vollständigem Lese-/Schreibdurchgang neu berechnet – spart einen kompletten I/O-Durchgang pro Tile. Der NoData-GDAL-Tag wird bewusst **nicht** hier gesetzt, sondern bleibt wie gehabt Aufgabe von Script 1 (dort erfolgt die GDS-spezifische Normalisierung auf `"0 0 0"`, siehe `normalize_nodata_for_output` oben).
+
+Script 1 erkennt über `meta["FixFalseNodata"]`, dass die Maske bereits gesetzt ist, und überspringt `tag_mask_on_raster()` für diese Dateien (der NoData-Tag wird trotzdem normal gesetzt). Bei deaktivierter Checkbox oder für alle anderen GDS ändert sich nichts am bisherigen Ablauf.
+
+`3_fix_false_nodata_dop.py` ist auch eigenständig per CLI nutzbar (einzelnes Tile, ganzer Ordner, mit/ohne `--in-place`, optionaler CSV-Report der Kontroll-/Warnfälle) – siehe Docstring im Skript.
 
 ---
 
