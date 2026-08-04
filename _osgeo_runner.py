@@ -57,9 +57,13 @@ def _run_fix_false_nodata(mod3, quelle, meta):
         # zusaetzlichem Lese-/Schreibdurchgang neu zu berechnen. Der
         # NoData-GDAL-Tag bleibt bewusst Aufgabe von Script 1 (dort wird er
         # GDS-spezifisch normalisiert, siehe normalize_nodata_for_output).
+        # rewrite_real_nodata_to_zero: nur bei historischem NoData-Wert 255
+        # (weiss) - schreibt die echten NoData-Pixel direkt auf 0,0,0, damit
+        # Pixelwerte/Flag Mask/NoData-Tag konsistent sind (siehe README).
         result = mod3.process_tile_inplace(
             path, nodata_value=nodata_value,
-            strip_existing_mask=True, write_mask=True)
+            strip_existing_mask=True, write_mask=True,
+            rewrite_real_nodata_to_zero=(nodata_value == 255))
         n_px_total += result["n_increment_px"]
         print(f"  {fn}: {result['n_groups']} Gruppe(n), {result['n_increment_px']} Pixel korrigiert", flush=True)
         for w in result["warning_rows"]:

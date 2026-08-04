@@ -313,7 +313,7 @@ def tag_nodata_on_raster(file_path, nodata_str):
         ds = None
 
 
-def _compute_nodata_mask(ds, nodata_str):
+def _compute_nodata_mask(ds, nodata_str, rewrite_real_nodata_to_zero=False):
     """
     Liest alle Baender und berechnet die vollstaendige Gueltigkeits-Maske
     im Speicher (0=NoData, 255=gueltig). Ein Pixel gilt nur dann als
@@ -321,6 +321,13 @@ def _compute_nodata_mask(ds, nodata_str):
     (analog gdalwarp-Verhalten). Es wird dabei NICHTS auf der Platte
     veraendert - schlaegt das Lesen fehl, bleibt die Datei unberuehrt.
     Gibt None zurueck, wenn die Anzahl NoData-Werte nicht zu den Baendern passt.
+
+    rewrite_real_nodata_to_zero:
+      Ausnahme von obiger Garantie: setzt zusaetzlich die RGB-Baender (1-3)
+      an allen als NoData erkannten Pixeln direkt auf 0 (nur sinnvoll fuer
+      GDS SB_DOP mit historischem NoData-Wert 255,255,255, siehe
+      tag_mask_on_raster). Nutzt denselben Chunk-Durchlauf wie die
+      Maskenberechnung - kein zusaetzlicher Lese-/Schreibdurchgang.
     """
     values = nodata_str.split()
     n_bands = ds.RasterCount
@@ -334,20 +341,29 @@ def _compute_nodata_mask(ds, nodata_str):
 
     x_size, y_size = ds.RasterXSize, ds.RasterYSize
     full_mask = np.empty((y_size, x_size), dtype=np.uint8)
+    n_rgb_bands = min(3, n_bands)
 
     chunk_rows = 1000
     for y_off in range(0, y_size, chunk_rows):
         rows = min(chunk_rows, y_size - y_off)
         is_nodata = np.ones((rows, x_size), dtype=bool)
+        band_arrs = []
         for i in range(1, n_bands + 1):
             band_arr = ds.GetRasterBand(i).ReadAsArray(0, y_off, x_size, rows)
             is_nodata &= (band_arr == nodata_values[i - 1])
+            band_arrs.append(band_arr)
         full_mask[y_off:y_off + rows, :] = np.where(is_nodata, 0, 255).astype(np.uint8)
+
+        if rewrite_real_nodata_to_zero and is_nodata.any():
+            for i in range(n_rgb_bands):
+                arr = band_arrs[i]
+                arr[is_nodata] = 0
+                ds.GetRasterBand(i + 1).WriteArray(arr, 0, y_off)
 
     return full_mask
 
 
-def tag_mask_on_raster(file_path, nodata_str):
+def tag_mask_on_raster(file_path, nodata_str, rewrite_real_nodata_to_zero=False):
     """
     Erzeugt zusaetzlich zum NoData-Tag eine interne per-Dataset-Maske
     (GDAL_TIFF_INTERNAL_MASK, 1-bit DEFLATE, im TIFF selbst gespeichert).
@@ -363,6 +379,13 @@ def tag_mask_on_raster(file_path, nodata_str):
     und geschrieben. Schlaegt die Berechnung fehl (z.B. GDAL/NumPy-Fehler),
     bleibt die Datei unveraendert - es kann keine halbfertige "alles
     ungueltig"-Maske mehr auf der Platte landen (siehe Vorfall 22.7.).
+
+    rewrite_real_nodata_to_zero:
+      Nur fuer GDS SB_DOP mit historischem NoData-Wert 255,255,255 (weiss):
+      schreibt die echten NoData-Pixel in den RGB-Baendern zusaetzlich direkt
+      auf 0,0,0, damit Pixelwerte, Flag Mask und NoData-Tag/XML (dieser ist
+      bei SB_DOP ohnehin immer auf 0 normalisiert, siehe
+      normalize_nodata_for_output) konsistent sind. Siehe _compute_nodata_mask.
     """
     values = nodata_str.split()
     if not values:
@@ -379,7 +402,7 @@ def tag_mask_on_raster(file_path, nodata_str):
         return
 
     try:
-        full_mask = _compute_nodata_mask(ds, nodata_str)
+        full_mask = _compute_nodata_mask(ds, nodata_str, rewrite_real_nodata_to_zero=rewrite_real_nodata_to_zero)
         if full_mask is None:
             return
 
@@ -716,7 +739,12 @@ def files_in_order(src, out, GDS, meta):
                     # gehabt gesetzt.
                     mask_already_set = GDS == "SB_DOP" and meta.get("FixFalseNodata")
                     if not is_sb_dsm_raster and not mask_already_set:
-                        tag_mask_on_raster(fp, nodata_str)
+                        # Historische 255er-NoData-DOPs: echte NoData-Pixel
+                        # gleich beim Maske-Berechnen auf 0,0,0 umschreiben
+                        # (siehe README "Historische 255er-NoData-DOPs").
+                        rewrite_to_zero = (GDS == "SB_DOP"
+                                           and all(float(v) == 255 for v in nodata_str.split()))
+                        tag_mask_on_raster(fp, nodata_str, rewrite_real_nodata_to_zero=rewrite_to_zero)
             update_file_csv(out, fp, GDS)
         except Exception as e:
             # OPT: Vollständiger Traceback im Log für einfacheres Debugging

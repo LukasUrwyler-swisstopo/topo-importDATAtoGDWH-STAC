@@ -28,7 +28,7 @@ Vorgehen:
      (Background Value).
   2. Connected-Component-Labeling auf dieser Maske (Standard: 8-Nachbarschaft).
   3. Pro Gruppe: Groesse (Pixelanzahl) bestimmen.
-  4. Klassifikation (einzige Schwelle, THRESHOLD = 10000 Pixel):
+  4. Klassifikation (einzige Schwelle, THRESHOLD = 25000 Pixel):
        - Groesse >= THRESHOLD -> "echt"   -> bleibt 0,0,0
        - Groesse <  THRESHOLD -> "falsch" -> anheben (+INCREMENT)
   5. Randkontakt (beruehrt Zeile/Spalte 0 oder die letzte Zeile/Spalte des
@@ -88,7 +88,7 @@ except ImportError:
 # Kernlogik (ohne GDAL-Abhaengigkeit, separat testbar)
 # ---------------------------------------------------------------------------
 
-def classify_mask(mask_zero, threshold=10000, connectivity=8):
+def classify_mask(mask_zero, threshold=25000, connectivity=8):
     """
     Klassifiziert zusammenhaengende Gruppen von True-Werten in mask_zero
     als "echtes NoData" (bleibt) oder "falsches NoData" (wird angehoben).
@@ -170,10 +170,11 @@ def _copy_sidecar_tfw(src_path, dst_path):
     return None
 
 
-def process_tile(src_path, dst_path, threshold=10000, increment=3,
+def process_tile(src_path, dst_path, threshold=25000, increment=3,
                   connectivity=8, write_tfw=False,
                   strip_existing_mask=False, fallback_epsg=2056,
-                  nodata_value=0, write_mask=False):
+                  nodata_value=0, write_mask=False,
+                  rewrite_real_nodata_to_zero=False):
     """
     Liest ein RGB-Tile, korrigiert falsche NoData-Pixel und schreibt das
     Ergebnis nach dst_path. Gibt Zusammenfassungszahlen und allfaellige
@@ -196,6 +197,16 @@ def process_tile(src_path, dst_path, threshold=10000, increment=3,
       weil die Pixel hier schon im Speicher vorliegen. Der NoData-GDAL-Tag
       wird bewusst NICHT gesetzt (bleibt Aufgabe des nachgelagerten Skripts,
       z.B. wegen GDS-spezifischer Normalisierung des Tag-Werts).
+
+    rewrite_real_nodata_to_zero:
+      Nur wirksam zusammen mit write_mask=True und nodata_value=255 (historische
+      DOP-Tiles mit weissem NoData 255,255,255). Setzt die RGB-Baender (1-3)
+      an allen als "echtes NoData" klassifizierten Pixeln (real_nodata_mask,
+      also NICHT die soeben korrigierten "falschen" Gruppen) zusaetzlich
+      direkt auf 0,0,0. Nutzt dieselben, bereits im Speicher vorliegenden
+      Pixelarrays - kein zusaetzlicher Lese-/Schreibdurchgang. Ziel: Pixelwerte,
+      Flag Mask und NoData-Tag/XML sind danach durchgehend konsistent auf 0
+      normalisiert, nicht nur Tag/XML wie bisher.
 
     .tfw-Handling:
       - Existiert neben src_path eine .tfw-Datei, wird diese unveraendert
@@ -281,23 +292,26 @@ def process_tile(src_path, dst_path, threshold=10000, increment=3,
         out_ds.SetGeoTransform(geotransform)
         out_ds.SetProjection(projection_wkt)
 
+        # Echtes NoData nach der Korrektur = Pixel, die weiterhin nodata_value
+        # sind (mask_zero abzueglich der soeben hochgesetzten "falschen"
+        # Pixel). Aequivalent zu einer Neuberechnung von _compute_nodata_mask()
+        # auf der korrigierten Datei, aber ohne zusaetzlichen Lesedurchgang.
+        real_nodata_mask = mask_zero & ~increment_mask
+        do_rewrite = rewrite_real_nodata_to_zero and nodata_value == 255
+
         for i in range(3):
             arr = band_arrays[i].copy()
             if increment_mask.any():
                 new_vals = arr[increment_mask].astype(np.int32) + signed_increment
                 new_vals = np.clip(new_vals, 0, 255).astype(dtype)
                 arr[increment_mask] = new_vals
+            if do_rewrite and real_nodata_mask.any():
+                arr[real_nodata_mask] = 0
             out_ds.GetRasterBand(i + 1).WriteArray(arr)
             # sicherstellen, dass kein NoData-Tag gesetzt ist
             out_ds.GetRasterBand(i + 1).DeleteNoDataValue()
 
         if write_mask:
-            # Echtes NoData nach der Korrektur = Pixel, die weiterhin
-            # nodata_value sind (mask_zero abzueglich der soeben
-            # hochgesetzten "falschen" Pixel). Aequivalent zu einer
-            # Neuberechnung von _compute_nodata_mask() auf der korrigierten
-            # Datei, aber ohne zusaetzlichen Lesedurchgang.
-            real_nodata_mask = mask_zero & ~increment_mask
             out_ds.CreateMaskBand(gdal.GMF_PER_DATASET)
             mask_band = out_ds.GetRasterBand(1).GetMaskBand()
             mask_band.WriteArray(np.where(real_nodata_mask, 0, 255).astype(np.uint8))
@@ -373,7 +387,8 @@ def process_tile_inplace(path, backup_dir=None, **kwargs):
     vorher dorthin kopiert, als Sicherheitsnetz bei Produktionsdaten.
 
     **kwargs werden 1:1 an process_tile() weitergereicht (threshold,
-    increment, connectivity, write_tfw, strip_existing_mask, fallback_epsg).
+    increment, connectivity, write_tfw, strip_existing_mask, fallback_epsg,
+    write_mask, rewrite_real_nodata_to_zero).
     """
     directory = os.path.dirname(os.path.abspath(path)) or "."
     base = os.path.basename(path)
@@ -418,8 +433,8 @@ def main():
     parser.add_argument("--output", help="Output-Pfad fuer Einzeltile")
     parser.add_argument("--input-dir", help="Ordner mit Input-Tiles (.tif)")
     parser.add_argument("--output-dir", help="Zielordner fuer korrigierte Tiles")
-    parser.add_argument("--threshold", type=int, default=10000,
-                         help="Gruppen ab dieser Groesse gelten als echtes NoData, darunter als falsch (Default: 10000)")
+    parser.add_argument("--threshold", type=int, default=25000,
+                         help="Gruppen ab dieser Groesse gelten als echtes NoData, darunter als falsch (Default: 25000)")
     parser.add_argument("--increment", type=int, default=3,
                          help="Wert, um den falsche NoData-Pixel vom NoData-Zielwert weg verschoben werden (Default: 3)")
     parser.add_argument("--nodata-value", type=int, choices=[0, 255], default=0,
@@ -435,6 +450,10 @@ def main():
     parser.add_argument("--epsg", type=int, default=2056,
                          help="Fallback-EPSG-Code, falls im Quellfile keine Projektion steht "
                               "(nur relevant mit --strip-existing-mask, Default: 2056)")
+    parser.add_argument("--rewrite-nodata-to-zero", action="store_true",
+                         help="Nur zusammen mit --strip-existing-mask und --nodata-value 255: "
+                              "setzt die RGB-Baender an allen als echtes NoData erkannten Pixeln "
+                              "zusaetzlich direkt auf 0,0,0 (historische 255er-NoData-DOPs).")
     parser.add_argument("--in-place", action="store_true",
                          help="Originaldateien (tif + tfw) direkt durch die korrigierte Version "
                               "ersetzen, statt in einen separaten Ordner zu schreiben. "
@@ -510,6 +529,7 @@ def main():
                 strip_existing_mask=args.strip_existing_mask,
                 fallback_epsg=args.epsg,
                 nodata_value=args.nodata_value,
+                rewrite_real_nodata_to_zero=args.rewrite_nodata_to_zero,
             )
             if args.in_place:
                 result = process_tile_inplace(src_path, backup_dir=args.backup_dir, **common_kwargs)

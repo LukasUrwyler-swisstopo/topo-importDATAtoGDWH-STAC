@@ -48,6 +48,9 @@ GDWH-Datenpacket erstellen (Portal)
 Hauptscript starten  (GUI)
         │
         ├─ GDS wählen
+        ├─ Datenpacket in GDWH erstellen  (Button "GDWH-PROD" / "GDWH-INT" –
+        │   öffnet den GDWH-Catalog-Import-Link des gewählten GDS im
+        │   Standardbrowser, zum Anlegen des Datenpakets im Portal)
         ├─ Meta-Informationen eingeben  (Dropdown / Auswahl)
         ├─ Pfade eingeben  (Quelle / Ziel)
         │
@@ -60,6 +63,8 @@ Hauptscript starten  (GUI)
         │   (kleine 0,0,0- / 255,255,255-Gruppen INNERHALB der Nutzdaten)
         │   korrigieren + Flag Mask direkt setzen – in-place auf den
         │   Quelldateien, noch vor der Quellordner-Bereinigung
+        │   (bei NoData 255,255,255: echte NoData-Pixel zusaetzlich auf
+        │   0,0,0 normalisiert, siehe unten)
         │
         ├─ Quellordner bereinigen  (nur Nutzdaten behalten – Whitelist pro GDS)
         ├─ XML-Generierung  (pro .tif / .laz)
@@ -74,7 +79,10 @@ Hauptscript starten  (GUI)
         │   keine Maske, siehe Vorfall 23.7.2026.
         │   AUSNAHME 2: SB_DOP mit aktivierter Vorkorrektur – die Maske wurde
         │   bereits von Script 3 gesetzt und wird hier übersprungen; der
-        │   NoData-Tag wird trotzdem wie gehabt gesetzt.)
+        │   NoData-Tag wird trotzdem wie gehabt gesetzt.
+        │   Bei NoData 255,255,255 (und Checkbox NICHT aktiviert): echte
+        │   NoData-Pixel werden hier ebenfalls zusaetzlich auf 0,0,0
+        │   normalisiert, siehe unten.)
         ├─ Daten ins Bucket kopieren  (NV-Ordner; PUNKTWOLKE: +PrecalculatedFormats)
         └─ files.csv erstellen  (MD5-Hash, TileKey, WKT-Footprint)
                 │
@@ -185,7 +193,16 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 
 DOP-Mosaike enthalten teils vereinzelte Pixel oder kleine Pixelgruppen, die durch die Radiometrie zufällig auf den NoData-Wert (0,0,0 bzw. 255,255,255) fallen – z.B. in sehr dunklen Schattenzonen oder überstrahlten Flächen –, obwohl sie eigentlich gültige Nutzdaten sind. Die normale Maskenberechnung (`_compute_nodata_mask`) vergleicht pro Pixel exakt gegen den NoData-Wert und würde solche Pixel fälschlich als NoData maskieren.
 
-`3_fix_false_nodata_dop.py` unterscheidet "echtes" von "falschem" NoData rein über die **Grösse der zusammenhängenden Pixelgruppe** (Connected-Component-Labeling, Schwelle 10'000 Pixel, Default): grosse Gruppen (Kachelrand) bleiben unverändert, kleine Gruppen werden um 3 Werte vom NoData-Wert weg verschoben (0,0,0 → 3,3,3 bzw. 255,255,255 → 252,252,252).
+`3_fix_false_nodata_dop.py` unterscheidet "echtes" von "falschem" NoData rein über die **Grösse der zusammenhängenden Pixelgruppe** (Connected-Component-Labeling, Schwelle 25'000 Pixel, Default): grosse Gruppen (Kachelrand) bleiben unverändert, kleine Gruppen werden um 3 Werte vom NoData-Wert weg verschoben (0,0,0 → 3,3,3 bzw. 255,255,255 → 252,252,252).
+
+### Historische 255er-NoData-DOPs: Pixelwerte auf 0,0,0 normalisieren
+
+Wählt man im GUI-Dropdown `NoData der Quelldaten` = `255 255 255` (GDS `SB_DOP`), werden zusätzlich alle als **echtes** NoData erkannten Pixel (nicht die "falschen" Gruppen von oben) direkt im Raster von 255,255,255 auf 0,0,0 umgeschrieben – im selben Lese-/Schreibdurchgang, der die Flag Mask ohnehin schon berechnet, also ohne zusätzlichen I/O:
+
+- **Checkbox "falsche NoData..." aktiv:** Umschreiben erfolgt in Script 3 (`process_tile`, Parameter `rewrite_real_nodata_to_zero`), direkt neben dem Schreiben der Flag Mask.
+- **Checkbox nicht aktiv:** Umschreiben erfolgt in Script 1 (`tag_mask_on_raster`/`_compute_nodata_mask`, gleicher Parametername), während die Maske dort ohnehin frisch berechnet wird.
+
+Damit sind Pixelwerte, Flag Mask und NoData-Tag/XML (dieser ist bei SB_DOP bereits immer auf `0` normalisiert, siehe oben) durchgehend konsistent, unabhängig vom historischen NoData-Wert der Quelldaten. Bei NoData-Wahl `0 0 0` ändert sich nichts (Umschreiben auf denselben Wert wäre wirkungslos).
 
 Aktiviert man im GUI die Checkbox neben `NoData` (nur bei GDS `SB_DOP`, standardmässig **aktiviert**), läuft dieser Ablauf automatisch **vor** Script 1, in-place auf den Quelldateien:
 

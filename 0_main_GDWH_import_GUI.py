@@ -854,6 +854,17 @@ class GDWHApp(tk.Tk):
                              command=self._on_gds_change
                              ).grid(row=0, column=col, padx=10, pady=4, sticky="nw")
 
+        # Datenpacket in GDWH erstellen – öffnet den GDWH-Catalog-Import-Link
+        # (PROD/INT) des aktuell gewählten GDS im Standardbrowser.
+        gdwh_frame = ttk.LabelFrame(self, text="Datenpacket in GDWH erstellen", padding=8, style="Section.TLabelframe")
+        gdwh_frame.pack(fill="x", padx=12, pady=(8, 0))
+        ttk.Button(gdwh_frame, text="GDWH-PROD",
+                    command=lambda: self._open_catalog_portal(CATALOG_HOST_PROD)
+                    ).pack(side="left", padx=(0, 8))
+        ttk.Button(gdwh_frame, text="GDWH-INT",
+                    command=lambda: self._open_catalog_portal(CATALOG_HOST_INT)
+                    ).pack(side="left")
+
         # OSGeo4W Python Zeile
         self._osgeo_frame = ttk.Frame(self)
         self._osgeo_frame.pack(fill="x", padx=12, pady=(6, 0))
@@ -1294,6 +1305,15 @@ class GDWHApp(tk.Tk):
             self._osgeo_python = path
             _save_osgeo_config(path)
             self._update_osgeo_label()
+
+    def _open_catalog_portal(self, host):
+        """Oeffnet den GDWH-Catalog-Import-Link (PROD/INT) des gewaehlten GDS im Standardbrowser."""
+        gds = self.gds_var.get()
+        url = f"https://{host}/catalog-ng/catalog/{gds}/import"
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
 
     # ── Dynamische Anpassungen ────────────────────────────────────────────────
     def _on_gds_change(self):
