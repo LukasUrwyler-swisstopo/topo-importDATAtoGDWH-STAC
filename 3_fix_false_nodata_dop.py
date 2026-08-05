@@ -17,26 +17,47 @@ vorliegen.
 
 Hintergrund:
   - Echtes NoData in einem DOP-Tile besteht aus einer grossen zusammenhaengenden
-    Pixelgruppe (>= THRESHOLD Pixel) und beruehrt immer mindestens einen Rand
-    des Tiles.
+    Pixelgruppe (>= THRESHOLD Pixel), deren Aussenkontur (Befliegungs-/
+    Mosaik-Perimeter) ausserdem ueber eine laengere Strecke entlang eines
+    Tile-Rands verlaeuft (>= MIN_BORDER_CONTACT Pixel Randkontakt).
   - "Falsches" NoData sind einzelne Pixel oder kleine Gruppen (< THRESHOLD
     Pixel) innerhalb der Nutzdaten, die durch die Radiometrie zufaellig auf
     0,0,0 gefallen sind (dunkle Schattenzonen).
+  - Sonderfall: grosse ueberstrahlte ("ausgebrannte") Gletscherflaechen
+    koennen zufaellig an einen Tile-Rand grenzen, teils sogar ueber eine
+    laengere Strecke, und waeren nach Groesse und Randkontakt allein nicht
+    immer von echtem NoData zu unterscheiden. Der entscheidende Unterschied
+    liegt am inneren Rand der Gruppe (dem Teil, der NICHT auf dem Tile-Rand
+    liegt, sondern in die Nutzdaten uebergeht): echtes NoData ist ein
+    harter Schnitt (Maskierung), die Nutzdaten-Pixel direkt daneben haben
+    normale, vom NoData-Wert klar verschiedene Werte. Ueberstrahlung ist ein
+    photometrischer Effekt mit weichem Uebergang - die Pixel direkt an der
+    Gruppe liegen selbst schon nahe am NoData-Wert (z.B. 220-224 statt exakt
+    255,255,255 bei weissem NoData). Dieser Randverlauf-Gradient ist die
+    vierte, abschliessende Bedingung.
 
 Vorgehen:
   1. Maske bilden: alle Pixel, bei denen R, G und B gleichzeitig 0 sind
      (Background Value).
   2. Connected-Component-Labeling auf dieser Maske (Standard: 8-Nachbarschaft).
-  3. Pro Gruppe: Groesse (Pixelanzahl) bestimmen.
-  4. Klassifikation (einzige Schwelle, THRESHOLD = 25000 Pixel):
-       - Groesse >= THRESHOLD -> "echt"   -> bleibt 0,0,0
-       - Groesse <  THRESHOLD -> "falsch" -> anheben (+INCREMENT)
-  5. Randkontakt (beruehrt Zeile/Spalte 0 oder die letzte Zeile/Spalte des
-     Tiles) wird zusaetzlich geprueft, ist aber NICHT entscheidend fuer die
-     Klassifikation. Es dient nur als Kontrollhinweis: eine als "echt"
-     eingestufte Gruppe ohne Randkontakt ist untypisch und wird im Log/Report
-     markiert, damit sie manuell geprueft werden kann.
-  6. Nur die Baender 1-3 (RGB) werden veraendert. Ein evtl. vorhandenes 4.
+  3. Pro Gruppe: Groesse (Pixelanzahl) und Randkontakt bestimmen. Randkontakt
+     ist die Summe der Pixel der Gruppe, die auf einer der vier Tile-Kanten
+     (Zeile/Spalte 0 bzw. letzte Zeile/Spalte) liegen, ueber alle Kanten
+     zusammengezaehlt (deckt auch Eck-Faelle ab, die zwei Kanten je nur
+     kurz beruehren).
+  4. Klassifikation, vier Bedingungen nacheinander (jede nur geprueft, wenn
+     die vorherige erfuellt ist - spart die teureren Stufen im Regelfall):
+       A) Groesse >= THRESHOLD (Default 25000 Pixel)?
+       B) Randkontakt vorhanden (> 0 Pixel)?
+       C) Randkontakt >= MIN_BORDER_CONTACT (Default 100 Pixel)?
+       D) Nur fuer den nicht auf dem Tile-Rand liegenden Teil des inneren
+          Gruppenrands: sind die direkt angrenzenden Nutzdaten-Pixel
+          mehrheitlich NAHE am NoData-Wert (weicher Uebergang, Default-
+          Toleranz 40, Default-Anteil 50%)? Wenn ja -> trotz A-C "falsch"
+          (Ueberstrahlung/Schatten-Clipping). Wenn nein (harter Schnitt)
+          -> "echt".
+       A, B oder C nicht erfuellt -> sofort "falsch", D wird nicht geprueft.
+  5. Nur die Baender 1-3 (RGB) werden veraendert. Ein evtl. vorhandenes 4.
      Band (z.B. NIR/Alpha) wird unveraendert uebernommen.
 
 Die Kernlogik (classify_mask) ist von der GDAL-I/O getrennt und wurde separat
@@ -88,19 +109,73 @@ except ImportError:
 # Kernlogik (ohne GDAL-Abhaengigkeit, separat testbar)
 # ---------------------------------------------------------------------------
 
-def classify_mask(mask_zero, threshold=25000, connectivity=8):
+def classify_mask(mask_zero, band_arrays_rgb, nodata_value, threshold=25000,
+                   connectivity=8, min_border_contact=100,
+                   gradient_tolerance=None, gradient_ring_fraction=0.5,
+                   min_fill_ratio=0.15):
     """
     Klassifiziert zusammenhaengende Gruppen von True-Werten in mask_zero
     als "echtes NoData" (bleibt) oder "falsches NoData" (wird angehoben).
 
-    Regel: Groesse >= threshold -> echt, sonst falsch.
-    Randkontakt wird nur als Kontrollhinweis mitgeloggt, beeinflusst den
-    Entscheid nicht.
+    Fuenfstufige Pruefung, jede Stufe nur, wenn die vorherige erfuellt ist
+    (spart die teureren Stufen im Regelfall):
+      A) Groesse >= threshold?        Sonst sofort "falsch".
+      B) Beruehrt die Gruppe ueberhaupt einen Tile-Rand?  Sonst "falsch".
+      C) Randkontakt (Summe der Gruppenpixel auf allen vier Tile-Kanten
+         zusammen, nicht nur ein Ja/Nein pro Kante - deckt auch Eck-Faelle
+         ab) >= min_border_contact?   Sonst "falsch".
+      D) Nur fuer den Teil des Gruppenrands, der NICHT auf dem Tile-Rand
+         liegt (also in die Nutzdaten uebergeht): sind die direkt
+         angrenzenden Pixel mehrheitlich nahe am NoData-Wert (weicher
+         Uebergang)? Wenn ja -> trotz A-C "falsch", sonst weiter zu E.
+      E) Nur wenn D "echt" ergeben hat: Bounding-Box-Fuellgrad (Groesse der
+         Gruppe / Flaeche ihrer Bounding-Box) >= min_fill_ratio? Kompakte,
+         block-/keilfoermige Flaechen (typisch fuer einen Perimeter-Schnitt)
+         haben einen hohen Fuellgrad. Duenne, verzweigte Formen (typisch fuer
+         Gletscherspalten/Grate) haben einen niedrigen Fuellgrad. Wenn zu
+         niedrig -> trotz A-D "falsch", sonst "echt".
+
+    Grund fuer Stufe C: eine grosse, ueberstrahlte Gletscherflaeche kann
+    zufaellig an einen Tile-Rand grenzen, teils sogar ueber eine laengere
+    Strecke, und waere nach Groesse und Randkontakt allein nicht immer von
+    echtem Mosaik-NoData zu unterscheiden.
+
+    Grund fuer Stufe D: der eigentliche Unterschied liegt am inneren
+    Gruppenrand. Echtes NoData ist ein harter Maskierungs-Schnitt - die
+    Nutzdaten-Pixel direkt daneben sind normale, klar vom NoData-Wert
+    verschiedene Werte. Ueberstrahlung/Schatten-Clipping ist dagegen ein
+    photometrischer Effekt mit weichem Uebergang - die angrenzenden Pixel
+    liegen selbst schon nahe am NoData-Wert (Ueberstrahlung bei weiss:
+    Werte 220-254; Schatten-Clipping bei schwarz: Werte 1-20 - beide
+    Bereiche ausdruecklich ohne den exakten NoData-Wert selbst). Ein direkt
+    angrenzendes Pixel mit exaktem NoData-Wert gehoert per
+    Connected-Component-Labeling ohnehin schon zur Gruppe selbst, deshalb
+    kann der Ring nur "nahe, aber nicht exakt gleich" enthalten.
+
+    band_arrays_rgb:
+      Liste der drei RGB-Baender (2D-Arrays, gleiche Form wie mask_zero),
+      fuer die Randverlauf-Pruefung in Stufe D.
+
+    gradient_tolerance:
+      None (Default) -> automatisch anhand nodata_value gewaehlt: 35 bei
+      255 (deckt 220-254 ab, Ueberstrahlung/Sensorsaettigung), 20 bei 0
+      (deckt 1-20 ab, Schatten-Clipping). Die beiden Effekte sind
+      photometrisch nicht symmetrisch, deshalb kein gemeinsamer Wert.
+      Explizit gesetzter Wert (int) uebersteuert die Automatik.
+
+    min_fill_ratio:
+      Schwelle fuer Stufe E (Default 0.15 = 15%). Bewusst konservativ
+      niedrig angesetzt: nur sehr duenne/verzweigte Formen sollen dadurch
+      als falsch erkannt werden, nicht jede unregelmaessige, aber
+      plausible Perimeterform.
 
     Rueckgabe:
         increment_mask : bool-Array, True = diese Pixel sollen angehoben werden
         log_rows        : Liste von Dicts mit Infos pro Gruppe (fuer Report/Debug)
     """
+    if gradient_tolerance is None:
+        gradient_tolerance = 35 if nodata_value == 255 else 20
+
     structure = np.ones((3, 3), dtype=int) if connectivity == 8 else None
     labeled, n_features = ndimage.label(mask_zero, structure=structure)
 
@@ -112,33 +187,106 @@ def classify_mask(mask_zero, threshold=25000, connectivity=8):
 
     sizes = ndimage.sum(mask_zero, labeled, index=np.arange(1, n_features + 1))
 
-    border_labels = set()
-    border_labels.update(np.unique(labeled[0, :]).tolist())
-    border_labels.update(np.unique(labeled[-1, :]).tolist())
-    border_labels.update(np.unique(labeled[:, 0]).tolist())
-    border_labels.update(np.unique(labeled[:, -1]).tolist())
-    border_labels.discard(0)
+    # Stufe A zuerst fuer alle Gruppen pruefen. Der Randkontakt (Stufe B/C)
+    # wird erst berechnet, wenn ueberhaupt eine Gruppe die Groesse-Schwelle
+    # erreicht - im Regelfall (keine Gruppe auch nur annaehernd so gross)
+    # entfaellt dieser Schritt komplett.
+    candidate_label_ids = {
+        label_id for label_id, size in enumerate(sizes, start=1) if size >= threshold
+    }
+
+    border_contact_counts = None
+    if candidate_label_ids:
+        border_mask = np.zeros_like(mask_zero, dtype=bool)
+        border_mask[0, :] = True
+        border_mask[-1, :] = True
+        border_mask[:, 0] = True
+        border_mask[:, -1] = True
+
+        border_pixel_labels = labeled[border_mask]
+        border_contact_counts = np.bincount(
+            border_pixel_labels[border_pixel_labels > 0], minlength=n_features + 1
+        )
+
+    # Bounding-Boxen fuer Stufe E: ein einziger Aufruf ueber alle Labels,
+    # kein zusaetzlicher Pixel-Durchgang (arbeitet auf dem bereits
+    # vorliegenden labeled-Array). Nur berechnet, wenn ueberhaupt ein
+    # Kandidat existiert.
+    bounding_boxes = ndimage.find_objects(labeled) if candidate_label_ids else None
+
+    dilation_structure = np.ones((3, 3), dtype=bool)
 
     for label_id in range(1, n_features + 1):
         size = int(sizes[label_id - 1])
-        touches_border = label_id in border_labels
+        ring_close_fraction = None
 
-        if size >= threshold:
-            decision = "real_nodata"
-            if not touches_border:
-                # Untypisch: grosse Gruppe ohne Randkontakt.
-                # Per Definition sollte echtes NoData immer den Rand beruehren.
-                # Klassifikation bleibt "echt" (bleibt 0,0,0), wird aber
-                # markiert, damit der Fall manuell geprueft werden kann.
-                decision = "real_nodata_no_border_CHECK"
-        else:
+        if label_id not in candidate_label_ids:
+            # Stufe A nicht erfuellt -> falsch, B-D werden gar nicht erst
+            # geprueft.
+            touches_border = None
             decision = "false_nodata"
+        else:
+            border_contact_px = int(border_contact_counts[label_id])
+            touches_border = border_contact_px > 0
+            if not (touches_border and border_contact_px >= min_border_contact):
+                # Stufe B nicht erfuellt (kein Randkontakt) oder Stufe C
+                # nicht erfuellt (Randkontakt zu kurz) -> falsch, Stufe D
+                # wird nicht mehr geprueft.
+                decision = "false_nodata"
+            else:
+                # Stufe D: Randverlauf am inneren (nicht auf dem Tile-Rand
+                # liegenden) Teil der Gruppe pruefen. Ein direkt
+                # angrenzendes Pixel mit exaktem NoData-Wert waere bereits
+                # Teil derselben Gruppe (Connected-Component-Labeling),
+                # der Ring enthaelt also nur echte Nutzdaten-Nachbarn.
+                group_mask = (labeled == label_id)
+                ring = ndimage.binary_dilation(
+                    group_mask, structure=dilation_structure
+                ) & ~group_mask
+
+                if not ring.any():
+                    # Gruppe fuellt das ganze Tile aus - kein innerer Rand
+                    # zu pruefen, Stufe D kann nicht widerlegen -> echt.
+                    decision = "real_nodata"
+                else:
+                    diffs = np.abs(
+                        np.stack(
+                            [b[ring].astype(np.int32) for b in band_arrays_rgb],
+                            axis=0,
+                        ) - nodata_value
+                    )
+                    close_px = np.all(diffs <= gradient_tolerance, axis=0)
+                    ring_close_fraction = float(close_px.mean())
+
+                    if ring_close_fraction >= gradient_ring_fraction:
+                        # Weicher Uebergang -> Ueberstrahlung/Clipping,
+                        # trotz Stufe A-C "falsch". Stufe E wird nicht mehr
+                        # geprueft.
+                        decision = "false_nodata"
+                    else:
+                        # Harter Schnitt -> Stufe E pruefen.
+                        decision = "real_nodata"
+
+        if decision == "real_nodata":
+            # Stufe E: Bounding-Box-Fuellgrad. Nutzt die bereits berechnete
+            # Bounding-Box, kein zusaetzlicher Pixel-Durchgang.
+            bbox = bounding_boxes[label_id - 1]
+            bbox_area = (
+                (bbox[0].stop - bbox[0].start) * (bbox[1].stop - bbox[1].start)
+            )
+            fill_ratio = size / bbox_area
+            if fill_ratio < min_fill_ratio:
+                # Duenne, verzweigte Form -> trotz A-D "falsch".
+                decision = "false_nodata"
+
+        if decision == "false_nodata":
             increment_mask |= (labeled == label_id)
 
         log_rows.append({
             "label_id": label_id,
             "size_px": size,
             "touches_border": touches_border,
+            "ring_close_fraction": ring_close_fraction,
             "decision": decision,
         })
 
@@ -148,6 +296,25 @@ def classify_mask(mask_zero, threshold=25000, connectivity=8):
 # ---------------------------------------------------------------------------
 # GDAL I/O
 # ---------------------------------------------------------------------------
+
+_WRITE_CHUNK_ROWS = 1000
+
+
+def _write_band_chunked(out_band, arr, chunk_rows=_WRITE_CHUNK_ROWS):
+    """
+    Schreibt arr zeilenweise in Bloecken statt in einem einzigen WriteArray-
+    Aufruf (analog chunk_rows in Script 1s _compute_nodata_mask). Das
+    Connected-Component-Labeling selbst braucht zwingend das komplette
+    Array (kann nicht gechunkt werden, ohne den Algorithmus neu zu bauen),
+    aber das Schreiben danach ist unabhaengig davon und profitiert bei
+    sehr grossen Tiles von kleineren, aufeinanderfolgenden Schreibzugriffen
+    statt einem einzelnen sehr grossen.
+    """
+    y_size = arr.shape[0]
+    for y_off in range(0, y_size, chunk_rows):
+        rows = min(chunk_rows, y_size - y_off)
+        out_band.WriteArray(arr[y_off:y_off + rows, :], 0, y_off)
+
 
 def _copy_sidecar_tfw(src_path, dst_path):
     """
@@ -170,11 +337,13 @@ def _copy_sidecar_tfw(src_path, dst_path):
     return None
 
 
-def process_tile(src_path, dst_path, threshold=25000, increment=3,
+def process_tile(src_path, dst_path, threshold=25000, increment=7,
                   connectivity=8, write_tfw=False,
                   strip_existing_mask=False, fallback_epsg=2056,
                   nodata_value=0, write_mask=False,
-                  rewrite_real_nodata_to_zero=False):
+                  rewrite_real_nodata_to_zero=False, min_border_contact=100,
+                  gradient_tolerance=None, gradient_ring_fraction=0.5,
+                  min_fill_ratio=0.15):
     """
     Liest ein RGB-Tile, korrigiert falsche NoData-Pixel und schreibt das
     Ergebnis nach dst_path. Gibt Zusammenfassungszahlen und allfaellige
@@ -185,6 +354,28 @@ def process_tile(src_path, dst_path, threshold=25000, increment=3,
       z.B. aus der GUI-Wahl "NoData der Quelldaten" uebernommen. Falsche
       Pixel werden von diesem Wert weg verschoben: bei 0 um +increment,
       bei 255 um -increment (symmetrisch).
+
+    min_border_contact:
+      Dritte Bedingung fuer "echtes NoData" (siehe classify_mask): eine
+      Gruppe gilt nur dann als echt, wenn sie zusaetzlich zur Groesse auch
+      ueber mindestens so viele Pixel den Tile-Rand beruehrt. Verhindert,
+      dass grosse, ueberstrahlte Gletscherflaechen, die den Rand nur schmal
+      kreuzen, faelschlich als echtes NoData stehen bleiben.
+
+    gradient_tolerance / gradient_ring_fraction:
+      Vierte, abschliessende Bedingung (siehe classify_mask): prueft am
+      inneren Gruppenrand (nicht auf dem Tile-Rand), ob die angrenzenden
+      Nutzdaten-Pixel nahe (gradient_tolerance) am NoData-Wert liegen und
+      das bei einem Mindestanteil (gradient_ring_fraction) der Randpixel.
+      Erkennt weiche Uebergaenge durch Ueberstrahlung/Schatten-Clipping,
+      die trotz Groesse und Randkontakt kein echtes NoData sind.
+      gradient_tolerance=None (Default) waehlt automatisch 35 bei
+      nodata_value=255 bzw. 20 bei nodata_value=0 (siehe classify_mask).
+
+    min_fill_ratio:
+      Fuenfte, abschliessende Bedingung (siehe classify_mask): Bounding-
+      Box-Fuellgrad der Gruppe, nur geprueft wenn Stufe A-D "echt" ergeben
+      haben. Verwirft duenne, verzweigte Formen (Default 0.15).
 
     write_mask:
       Nur zusammen mit strip_existing_mask=True unterstuetzt. Schreibt direkt
@@ -256,8 +447,14 @@ def process_tile(src_path, dst_path, threshold=25000, increment=3,
 
     increment_mask, log_rows = classify_mask(
         mask_zero,
+        band_arrays[:3],
+        nodata_value,
         threshold=threshold,
         connectivity=connectivity,
+        min_border_contact=min_border_contact,
+        gradient_tolerance=gradient_tolerance,
+        gradient_ring_fraction=gradient_ring_fraction,
+        min_fill_ratio=min_fill_ratio,
     )
     warning_rows = [r for r in log_rows if "CHECK" in r["decision"]]
 
@@ -298,23 +495,29 @@ def process_tile(src_path, dst_path, threshold=25000, increment=3,
         # auf der korrigierten Datei, aber ohne zusaetzlichen Lesedurchgang.
         real_nodata_mask = mask_zero & ~increment_mask
         do_rewrite = rewrite_real_nodata_to_zero and nodata_value == 255
+        has_increment = increment_mask.any()
+        has_rewrite = do_rewrite and real_nodata_mask.any()
 
         for i in range(3):
-            arr = band_arrays[i].copy()
-            if increment_mask.any():
+            # Kein .copy() mehr noetig: band_arrays[i] wird danach nicht
+            # mehr im Originalzustand gebraucht, direktes In-Place-Aendern
+            # spart eine komplette zusaetzliche Array-Kopie im Speicher.
+            arr = band_arrays[i]
+            if has_increment:
                 new_vals = arr[increment_mask].astype(np.int32) + signed_increment
-                new_vals = np.clip(new_vals, 0, 255).astype(dtype)
-                arr[increment_mask] = new_vals
-            if do_rewrite and real_nodata_mask.any():
+                arr[increment_mask] = np.clip(new_vals, 0, 255).astype(dtype)
+            if has_rewrite:
                 arr[real_nodata_mask] = 0
-            out_ds.GetRasterBand(i + 1).WriteArray(arr)
+            out_band = out_ds.GetRasterBand(i + 1)
+            _write_band_chunked(out_band, arr)
             # sicherstellen, dass kein NoData-Tag gesetzt ist
-            out_ds.GetRasterBand(i + 1).DeleteNoDataValue()
+            out_band.DeleteNoDataValue()
 
         if write_mask:
             out_ds.CreateMaskBand(gdal.GMF_PER_DATASET)
             mask_band = out_ds.GetRasterBand(1).GetMaskBand()
-            mask_band.WriteArray(np.where(real_nodata_mask, 0, 255).astype(np.uint8))
+            mask_arr = np.where(real_nodata_mask, 0, 255).astype(np.uint8)
+            _write_band_chunked(mask_band, mask_arr)
 
         out_ds.FlushCache()
         out_ds = None
@@ -348,17 +551,18 @@ def process_tile(src_path, dst_path, threshold=25000, increment=3,
 
     out_ds = driver.CreateCopy(dst_path, ds, options=create_options)
 
+    has_increment = increment_mask.any()
     for i in range(3):
-        arr = band_arrays[i].copy()
-        if increment_mask.any():
+        # Kein .copy() mehr noetig, siehe strip_existing_mask-Zweig oben.
+        arr = band_arrays[i]
+        if has_increment:
             new_vals = arr[increment_mask].astype(np.int32) + signed_increment
-            new_vals = np.clip(new_vals, 0, 255).astype(dtype)
-            arr[increment_mask] = new_vals
-        out_ds.GetRasterBand(i + 1).WriteArray(arr)
+            arr[increment_mask] = np.clip(new_vals, 0, 255).astype(dtype)
+        _write_band_chunked(out_ds.GetRasterBand(i + 1), arr)
 
     # Weitere Baender (z.B. 4. Kanal) unveraendert uebernehmen
     for i in range(3, n_bands):
-        out_ds.GetRasterBand(i + 1).WriteArray(band_arrays[i])
+        _write_band_chunked(out_ds.GetRasterBand(i + 1), band_arrays[i])
 
     out_ds.FlushCache()
     out_ds = None
@@ -388,7 +592,8 @@ def process_tile_inplace(path, backup_dir=None, **kwargs):
 
     **kwargs werden 1:1 an process_tile() weitergereicht (threshold,
     increment, connectivity, write_tfw, strip_existing_mask, fallback_epsg,
-    write_mask, rewrite_real_nodata_to_zero).
+    write_mask, rewrite_real_nodata_to_zero, min_border_contact,
+    gradient_tolerance, gradient_ring_fraction, min_fill_ratio).
     """
     directory = os.path.dirname(os.path.abspath(path)) or "."
     base = os.path.basename(path)
@@ -435,8 +640,24 @@ def main():
     parser.add_argument("--output-dir", help="Zielordner fuer korrigierte Tiles")
     parser.add_argument("--threshold", type=int, default=25000,
                          help="Gruppen ab dieser Groesse gelten als echtes NoData, darunter als falsch (Default: 25000)")
-    parser.add_argument("--increment", type=int, default=3,
-                         help="Wert, um den falsche NoData-Pixel vom NoData-Zielwert weg verschoben werden (Default: 3)")
+    parser.add_argument("--min-border-contact", type=int, default=100,
+                         help="Dritte Bedingung fuer echtes NoData: Gruppe muss zusaetzlich zur Groesse "
+                              "ueber mindestens so viele Pixel den Tile-Rand beruehren (Summe ueber alle "
+                              "Kanten), sonst gilt sie als falsch (Default: 100)")
+    parser.add_argument("--gradient-tolerance", type=int, default=None,
+                         help="Vierte Bedingung fuer echtes NoData: maximale Differenz zum NoData-Wert, "
+                              "ab der ein Randpixel als 'nahe' gilt. Default: automatisch anhand "
+                              "--nodata-value (35 bei 255, 20 bei 0)")
+    parser.add_argument("--gradient-ring-fraction", type=float, default=0.5,
+                         help="Vierte Bedingung fuer echtes NoData: Mindestanteil der inneren Randpixel, "
+                              "die nahe am NoData-Wert liegen muessen, damit die Gruppe trotz Groesse und "
+                              "Randkontakt als falsch (Ueberstrahlung) gilt (Default: 0.5)")
+    parser.add_argument("--min-fill-ratio", type=float, default=0.15,
+                         help="Fuenfte Bedingung fuer echtes NoData: Bounding-Box-Fuellgrad der Gruppe "
+                              "(nur geprueft, wenn Stufe A-D bereits 'echt' ergeben haben), darunter gilt "
+                              "sie trotzdem als falsch (duenne, verzweigte Form) (Default: 0.15)")
+    parser.add_argument("--increment", type=int, default=7,
+                         help="Wert, um den falsche NoData-Pixel vom NoData-Zielwert weg verschoben werden (Default: 7)")
     parser.add_argument("--nodata-value", type=int, choices=[0, 255], default=0,
                          help="NoData-Zielwert der Quelldaten: 0 = schwarz (Default), 255 = weiss")
     parser.add_argument("--connectivity", type=int, choices=[4, 8], default=8,
@@ -530,6 +751,10 @@ def main():
                 fallback_epsg=args.epsg,
                 nodata_value=args.nodata_value,
                 rewrite_real_nodata_to_zero=args.rewrite_nodata_to_zero,
+                min_border_contact=args.min_border_contact,
+                gradient_tolerance=args.gradient_tolerance,
+                gradient_ring_fraction=args.gradient_ring_fraction,
+                min_fill_ratio=args.min_fill_ratio,
             )
             if args.in_place:
                 result = process_tile_inplace(src_path, backup_dir=args.backup_dir, **common_kwargs)

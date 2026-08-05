@@ -45,6 +45,36 @@ def copy_with_retry(src, dst, retries=3, wait=15):
             else:
                 raise
 
+def copy_with_retry_md5(src, dst, retries=3, wait=15):
+    """Wie copy_with_retry, berechnet aber die MD5-Prüfsumme im selben
+    Lese-/Schreibdurchgang, statt die Quelldatei danach separat nochmals
+    komplett einzulesen (calculate_md5). Bei grossen Dateien über
+    Netzlaufwerk spart das einen kompletten zusätzlichen Netzwerk-
+    Lesevorgang pro Datei. Gibt den MD5-Hexdigest zurück.
+    """
+    for attempt in range(1, retries + 1):
+        h = hashlib.md5()
+        try:
+            with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+                for chunk in iter(lambda: fsrc.read(65536), b""):
+                    fdst.write(chunk)
+                    h.update(chunk)
+            shutil.copystat(src, dst)
+            if os.path.getsize(src) != os.path.getsize(dst):
+                raise IOError(f"Dateigrösse stimmt nicht überein: {os.path.basename(dst)}")
+            return h.hexdigest()
+        except Exception as e:
+            log(f"  [Kopieren Versuch {attempt}/{retries}] Fehler: {e}")
+            try:
+                os.remove(dst)
+            except Exception:
+                pass
+            if attempt < retries:
+                log(f"  Warte {wait}s, dann nochmal…")
+                time.sleep(wait)
+            else:
+                raise
+
 # ****************************** Helper ******************************
 def calculate_md5(file_path):
     h = hashlib.md5()
@@ -579,11 +609,18 @@ def update_file_csv(output_path, full_file_path, GDS):
         subfolder = "HILLSHADE" if "hillshade" in name.lower() else "DSM"
         dst_folder = os.path.join(output_path, "NV", subfolder)
         os.makedirs(dst_folder, exist_ok=True)
+        md5 = None
         for fext in [ext, ".xml", ".tfw"]:
             src = full_file_path.rsplit('.', 1)[0] + fext
             if os.path.exists(src):
-                copy_with_retry(src, os.path.join(dst_folder, os.path.basename(src)))
-        md5 = calculate_md5(full_file_path)
+                dst = os.path.join(dst_folder, os.path.basename(src))
+                if fext == ext:
+                    # Hauptdatei: MD5 im selben Lese-/Schreibdurchgang wie
+                    # das Kopieren berechnen, statt hinterher nochmals
+                    # komplett einzulesen.
+                    md5 = copy_with_retry_md5(src, dst)
+                else:
+                    copy_with_retry(src, dst)
         tilekey = "1000"
         row = f"NV\\{subfolder}\\{name};{md5};{tilekey};add;{wkt_footprint(full_file_path)}"
 
@@ -591,18 +628,20 @@ def update_file_csv(output_path, full_file_path, GDS):
     elif GDS == "SB_DSM_PUNKTWOLKE" and ext == ".laz":
         # TileKey: die zwei Parts direkt vor '_LV95' (robust, von hinten)
         tilekey = extract_tile_lv95(name)
-        md5 = calculate_md5(full_file_path)
 
-        # Hauptziel: NV\SB_DSM_PUNKTWOLKE
+        # Hauptziel: NV\SB_DSM_PUNKTWOLKE - MD5 waehrend diesem Kopiervorgang
+        # berechnen (spart den separaten calculate_md5-Lesevorgang).
         dst_nv = os.path.join(output_path, "NV", "SB_DSM_PUNKTWOLKE")
         os.makedirs(dst_nv, exist_ok=True)
-        copy_with_retry(full_file_path, os.path.join(dst_nv, name))
+        md5 = copy_with_retry_md5(full_file_path, os.path.join(dst_nv, name))
 
         xml_src = full_file_path.rsplit('.', 1)[0] + ".xml"
         if os.path.exists(xml_src):
             copy_with_retry(xml_src, os.path.join(dst_nv, os.path.basename(xml_src)))
 
-        # Zweites Ziel: PrecalculatedFormats\SB_DSM_PUNKTWOLKE
+        # Zweites Ziel: PrecalculatedFormats\SB_DSM_PUNKTWOLKE (andere
+        # Zieldatei/-name, deshalb weiterhin ein eigener Lesevorgang der
+        # Quelle noetig - gleiche MD5 wie oben, da identischer Inhalt).
         dst_pre = os.path.join(output_path, "PrecalculatedFormats", "SB_DSM_PUNKTWOLKE")
         os.makedirs(dst_pre, exist_ok=True)
         new_name = f"SB_DSM_PUNKTWOLKE_LAZ_CHLV95_LN02_{tilekey}.laz"
@@ -617,23 +656,18 @@ def update_file_csv(output_path, full_file_path, GDS):
 
     # === SB_DOP / SB_DOP_16 ===
     elif GDS in ["SB_DOP", "SB_DOP_16"]:
-        # TileKey: die zwei Parts direkt vor '_LV95' (robust, von hinten)
-        if "LV95" in name_parts:
-            lv95_index = name_parts.index("LV95")
-            if lv95_index < 2:
-                raise ValueError(f"'LV95' steht zu früh im Dateinamen (Position {lv95_index}): {name}")
-            tile = name_parts[lv95_index - 2] + "_" + name_parts[lv95_index - 1]
-        else:
-            raise ValueError(f"LV95 nicht im Dateinamen gefunden: {name}")
-
-        md5 = calculate_md5(full_file_path)
-        row = f"NV\\{name};{md5};{tile};add;"
-
+        # MD5 und files.csv-Zeile fuer die TIF-Datei werden bewusst NICHT
+        # hier berechnet, sondern erst in create_and_copy_order() beim
+        # tatsaechlichen Kopieren dorthin - spart einen kompletten
+        # zusaetzlichen Netzwerk-Lesevorgang der Quelldatei (vorher: hier
+        # volle MD5-Lesung, spaeter beim Kopieren nochmals volles Lesen).
+        # Der xml-Sidecar ist klein, dessen separate Kopie hier bleibt.
         xml_src = full_file_path.rsplit('.', 1)[0] + ".xml"
         if os.path.exists(xml_src):
             nv_path = os.path.join(output_path, "NV")
             os.makedirs(nv_path, exist_ok=True)
             copy_with_retry(xml_src, os.path.join(nv_path, os.path.basename(xml_src)))
+        return
 
     # === Default ===
     else:
@@ -766,9 +800,25 @@ def files_in_order(src, out, GDS, meta):
 def create_and_copy_order(out, src, GDS):
     if GDS in ["SB_DOP", "SB_DOP_16"]:
         nv_path = os.path.join(out, "NV")
+        csv_path = os.path.join(out, "files.csv")
         os.makedirs(nv_path, exist_ok=True)
         for fn in os.listdir(src):
-            if fn.lower().endswith(('.tif', '.tfw')):
+            if fn.lower().endswith('.tif'):
+                # MD5 + files.csv-Zeile erst hier, im selben Lese-/
+                # Schreibdurchgang wie das eigentliche Kopieren (siehe
+                # update_file_csv) - spart den vorher separaten, vollen
+                # MD5-Lesevorgang der Quelldatei.
+                name_parts = fn.rsplit('.', 1)[0].split('_')
+                if "LV95" not in name_parts:
+                    raise ValueError(f"LV95 nicht im Dateinamen gefunden: {fn}")
+                lv95_index = name_parts.index("LV95")
+                if lv95_index < 2:
+                    raise ValueError(f"'LV95' steht zu früh im Dateinamen (Position {lv95_index}): {fn}")
+                tile = name_parts[lv95_index - 2] + "_" + name_parts[lv95_index - 1]
+
+                md5 = copy_with_retry_md5(os.path.join(src, fn), os.path.join(nv_path, fn))
+                _csv_append(csv_path, f"NV\\{fn};{md5};{tile};add;")
+            elif fn.lower().endswith('.tfw'):
                 copy_with_retry(os.path.join(src, fn), os.path.join(nv_path, fn))
         log("DOP-Dateien kopiert.\n")
 

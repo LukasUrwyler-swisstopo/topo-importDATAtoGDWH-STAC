@@ -193,7 +193,14 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 
 DOP-Mosaike enthalten teils vereinzelte Pixel oder kleine Pixelgruppen, die durch die Radiometrie zufällig auf den NoData-Wert (0,0,0 bzw. 255,255,255) fallen – z.B. in sehr dunklen Schattenzonen oder überstrahlten Flächen –, obwohl sie eigentlich gültige Nutzdaten sind. Die normale Maskenberechnung (`_compute_nodata_mask`) vergleicht pro Pixel exakt gegen den NoData-Wert und würde solche Pixel fälschlich als NoData maskieren.
 
-`3_fix_false_nodata_dop.py` unterscheidet "echtes" von "falschem" NoData rein über die **Grösse der zusammenhängenden Pixelgruppe** (Connected-Component-Labeling, Schwelle 25'000 Pixel, Default): grosse Gruppen (Kachelrand) bleiben unverändert, kleine Gruppen werden um 3 Werte vom NoData-Wert weg verschoben (0,0,0 → 3,3,3 bzw. 255,255,255 → 252,252,252).
+`3_fix_false_nodata_dop.py` unterscheidet "echtes" von "falschem" NoData über fünf Stufen (Connected-Component-Labeling, jede Stufe nur geprüft, wenn die vorherige erfüllt ist):
+
+  - **A) Grösse** der zusammenhängenden Pixelgruppe ≥ Schwelle (25'000 Pixel, Default). Kleinere Gruppen sind sofort "falsch".
+  - **B/C) Randkontakt**: Gruppe muss einen Tile-Rand berühren, und zwar über mindestens `--min-border-contact` Pixel (Default 100, Summe über alle vier Kanten). Verhindert, dass grosse, zufällig an den Rand grenzende Gruppen (z.B. überstrahlte Gletscherflächen) allein wegen der Grösse als echt durchgehen.
+  - **D) Randverlauf**: am inneren (nicht auf dem Tile-Rand liegenden) Gruppenrand werden die angrenzenden Nutzdaten-Pixel geprüft. Ein harter Übergang (normale, klar verschiedene Werte) spricht für echtes NoData; ein weicher Übergang (Nachbarpixel selbst schon nahe am NoData-Wert – Überstrahlung/Schatten-Clipping) kippt die Gruppe zurück zu "falsch".
+  - **E) Bounding-Box-Füllgrad**: kompakte, block-/keilförmige Gruppen (typisch für einen Perimeter-Schnitt) bleiben "echt"; dünne, verzweigte Formen (typisch für Gletscherspalten/Grate) werden trotz A-D als "falsch" verworfen.
+
+Als "falsch" erkannte Gruppen werden um `--increment` Werte (Default **7**) vom NoData-Wert weg verschoben (0,0,0 → 7,7,7 bzw. 255,255,255 → 248,248,248) statt unverändert als NoData maskiert zu bleiben.
 
 ### Historische 255er-NoData-DOPs: Pixelwerte auf 0,0,0 normalisieren
 
@@ -213,6 +220,15 @@ Aktiviert man im GUI die Checkbox neben `NoData` (nur bei GDS `SB_DOP`, standard
 Script 1 erkennt über `meta["FixFalseNodata"]`, dass die Maske bereits gesetzt ist, und überspringt `tag_mask_on_raster()` für diese Dateien (der NoData-Tag wird trotzdem normal gesetzt). Bei deaktivierter Checkbox oder für alle anderen GDS ändert sich nichts am bisherigen Ablauf.
 
 `3_fix_false_nodata_dop.py` ist auch eigenständig per CLI nutzbar (einzelnes Tile, ganzer Ordner, mit/ohne `--in-place`, optionaler CSV-Report der Kontroll-/Warnfälle) – siehe Docstring im Skript.
+
+---
+
+## Performance: Netzwerk-I/O reduzieren
+
+Bei grossen Lieferungen über ein Netzlaufwerk (Quelle und/oder GDWH-Zielordner) kann die Laufzeit stark vom wiederholten Lesen/Schreiben derselben Datei dominiert werden, nicht von der eigentlichen Verarbeitung:
+
+- **MD5 ohne doppelten Lesevorgang**: `copy_with_retry_md5()` (Script 1) berechnet die Prüfsumme für `files.csv` im selben Lese-/Schreibdurchgang wie das Kopieren, statt die Quelldatei danach separat nochmals komplett einzulesen. Gilt für alle GDS-Typen, unabhängig von der Vorkorrektur-Option.
+- **Lokales Staging** (`_osgeo_runner.py`): ist im GUI-Feld "Lokaler Temp-Ordner (Staging)" ein erreichbarer Ordner konfiguriert (Default `Y:\00_GDWH-STAC_TempProcessingFolder\`, falls `Y:\` vorhanden ist), werden Quelle und ein evtl. bereits bestehendes Ziel-Datenpaket (inkl. `files.csv` aus früheren Läufen) zuerst dorthin gespiegelt. Die komplette Verarbeitung läuft dann lokal, erst am Schluss wird das fertige Ergebnis in einem Rutsch zurück ins Netzlaufwerk-Ziel kopiert. Reduziert die Anzahl vollständiger Netzwerktransfers pro Tile auf zwei (hin, zurück) statt mehrerer. Ist kein Staging-Ordner konfiguriert/erreichbar, läuft alles wie bisher direkt übers Netzlaufwerk. Schlägt das abschliessende Zurückkopieren fehl, bleibt die lokale Kopie erhalten (nicht automatisch gelöscht) und der Pfad wird im Log ausgegeben.
 
 ---
 

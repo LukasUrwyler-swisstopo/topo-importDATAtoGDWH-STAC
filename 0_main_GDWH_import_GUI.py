@@ -195,6 +195,49 @@ def _save_osgeo_config(path):
         pass
 
 
+# ─── Lokaler Staging-Ordner (Performance) ─────────────────────────────────────
+# Quelle und (bestehendes) Ziel werden vor der Verarbeitung auf ein schnelles,
+# lokales/VDI-eigenes Laufwerk gespiegelt statt direkt uebers Eingangs-/GDWH-
+# Netzlaufwerk mehrfach gelesen/geschrieben zu werden (siehe _osgeo_runner.py).
+# Reduziert bei grossen Lieferungen (viele/grosse Tiles) die Laufzeit deutlich.
+DEFAULT_STAGING_FOLDERNAME = "00_GDWH-STAC_TempProcessingFolder"
+
+
+def _detect_staging_dir():
+    """Gibt den lokalen Staging-Ordner zurueck: aus gespeicherter Config, sonst
+    Y:\\<Default>, falls das VDI-eigene Y:\\-Laufwerk vorhanden ist. Sonst leer
+    (kein Staging, Verarbeitung direkt uebers Netzlaufwerk wie bisher) - der
+    Benutzer muss dann selbst einen Ordner via 'Ändern…' waehlen (z.B. auf
+    einer Workstation ohne Y:\\)."""
+    if os.path.isfile(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                path = json.load(f).get("staging_dir", "")
+            if path and os.path.isdir(os.path.splitdrive(path)[0] + "\\"):
+                return path
+        except Exception:
+            pass
+
+    if os.path.isdir("Y:\\"):
+        return os.path.join("Y:\\", DEFAULT_STAGING_FOLDERNAME)
+
+    return ""
+
+
+def _save_staging_config(path):
+    """Speichert den lokalen Staging-Ordner-Pfad in _gdwh_config.json."""
+    try:
+        cfg = {}
+        if os.path.isfile(CONFIG_FILE):
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                cfg = json.load(f)
+        cfg["staging_dir"] = path
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 # ─── Hilfsfunktionen ──────────────────────────────────────────────────────────
 def _detect_python_home(python_exe):
     """Leitet PYTHONHOME vom Python-Executable ab (QGIS: apps\\PythonXXX, OSGeo4W: root)."""
@@ -254,10 +297,14 @@ class LineIDWidget(ttk.LabelFrame):
         self._entry.bind("<Return>",     lambda _: self._add())
         self._entry.bind("<Control-v>",  self._on_paste)
         self._entry.bind("<Control-V>",  self._on_paste)
-        self._fmt_lbl = ttk.Label(ef, text=" Format: YYYYMMDD_HHMM_QQQQQ  |  Mehrere IDs: aus Excel einfügen (Ctrl+V)",
-                                   font=("", 8))
-        self._fmt_lbl.pack(side="left")
         ttk.Button(ef, text="  +  ", command=self._add).pack(side="left", padx=(6, 0))
+
+        # Eigene Zeile unter Entry/Button, damit der "+"-Button (essentiell)
+        # bei schmalerer Spaltenbreite nie durch den Hinweistext verdrängt wird.
+        self._fmt_lbl = ttk.Label(self,
+            text=" Format: YYYYMMDD_HHMM_QQQQQ  |  Mehrere IDs: aus Excel einfügen (Ctrl+V)",
+            font=("", 8))
+        self._fmt_lbl.pack(fill="x", pady=(2, 0))
 
         lf = ttk.Frame(self)
         lf.pack(fill="both", expand=True, pady=(4, 0))
@@ -525,6 +572,17 @@ class SicherheitsCheckDialog(tk.Toplevel):
         if gds == "SB_DOP":
             _kv(sec1, "Falsche NoData-Pixel vorkorrigieren:",
                 "Ja" if meta.get("FixFalseNodata") else "Nein")
+            fix_hint_row = tk.Frame(sec1, bg=T["root"])
+            fix_hint_row.pack(fill="x", pady=(0, 3))
+            tk.Label(fix_hint_row,
+                     text="Hinweis: Je nach Grösse des DOP kann diese Vorkorrektur einige Zeit "
+                          "dauern. Deaktiviert beschleunigt sie den Import, birgt aber das "
+                          "Risiko, dass einzelne Pixel innerhalb der Nutzdaten (z.B. durch "
+                          "radiometrische Korrekturen entstanden) fälschlicherweise als "
+                          "NoData maskiert werden.",
+                     font=("Segoe UI", 8, "italic"),
+                     bg=T["root"], fg=T["fg_dim"], anchor="nw",
+                     wraplength=560, justify="left").pack(anchor="w")
         _kv(sec1, "TerrainModel:", meta.get("TerrainModel", ""))
         _kv(sec1, "CameraSystem:", meta.get("CameraSystem", ""))
 
@@ -554,7 +612,7 @@ class SicherheitsCheckDialog(tk.Toplevel):
                 "verwendet wird) korrekt und passt er zur Line_ID, die importiert werden soll?",
                 "Sind die NoData-Werte korrekt? (16BIT, 4-Band: schwarze "
                 "Background-Pixel = 0 0 0 0  /  weisse = 65535 65535 65535 65535)   "
-                "Vorgängig visuell kontrollieren (ApplicationsMaster / ArcGIS / QGIS).",
+                "Vorgängig mit dem Button «check input-NoData» visuell kontrollieren.",
             ]
         elif gds == "SB_DOP":
             check_questions = [
@@ -563,7 +621,7 @@ class SicherheitsCheckDialog(tk.Toplevel):
                 "Sind die Line_IDs korrekt?",
                 "Sind die NoData-Werte korrekt? (8BIT, 3-Band: schwarze "
                 "Background-Pixel = 0 0 0  /  weisse = 255 255 255)   "
-                "Vorgängig visuell kontrollieren (ApplicationsMaster / ArcGIS / QGIS).",
+                "Vorgängig mit dem Button «check input-NoData» visuell kontrollieren.",
             ]
         else:
             check_questions = [
@@ -761,7 +819,12 @@ class ImportDoneDialog(tk.Toplevel):
         h = self.winfo_reqheight() + 20
         px = parent.winfo_rootx() + parent.winfo_width() // 2 - w // 2
         py = parent.winfo_rooty() + parent.winfo_height() // 2 - h // 2
-        self.geometry(f"{w}x{h}+{max(0, px)}+{max(0, py)}")
+        # Kein max(0, ...)-Clamping: bei Mehrmonitor-Setups mit einem Monitor
+        # links/oberhalb des primären hat das GUI-Fenster dort negative
+        # Bildschirmkoordinaten - ein Clamp auf 0 wuerde das Popup faelschlich
+        # zurueck auf den primaeren Monitor zwingen, statt es dort zu zeigen,
+        # wo das GUI tatsaechlich steht.
+        self.geometry(f"{w}x{h}+{px}+{py}")
 
         self._set_titlebar_dark(dark)
         self.bind("<Escape>", lambda _: self._on_close())
@@ -799,12 +862,20 @@ class NoDataPreviewWindow(tk.Toplevel):
     """Popup-Viewer für die "check input-NoData"-Tiff-Vorschau (PPM-Datei).
 
     Rein visuelle Kontrolle der Rand-NoData-Pixel (schwarz/weiss), nicht
-    georeferenziert. Zoom (Mausrad, Stufen) und Pan (Ziehen) über die
-    Standard-Fähigkeiten von tk.Canvas / tk.PhotoImage - bewusst ohne Pillow,
-    damit keine zusätzliche Abhängigkeit im restriktiven Firmenumfeld nötig ist.
+    georeferenziert. Zoom (Buttons, Stufen) und Pan (Ziehen / Pfeil-Buttons)
+    über die Standard-Fähigkeiten von tk.Canvas / tk.PhotoImage - bewusst
+    ohne Pillow, damit keine zusätzliche Abhängigkeit im restriktiven
+    Firmenumfeld nötig ist. Kein Mausrad-Zoom (macht grosse Vorschaubilder
+    spürbar langsam) - stattdessen feste Ecken-Zoom- und Pan-Buttons.
     """
 
     _ZOOM_STEPS = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+
+    # Ecken-Zoom-Massstab ca. 1:1.8 (etwas weiter herausgezoomt als 1:1),
+    # als Bruch für PhotoImage.subsample()/.zoom() (nur Ganzzahlen möglich):
+    # 5/9 = 0.5555… ≈ 1/1.8
+    _CORNER_SUBSAMPLE = 9
+    _CORNER_ZOOM      = 5
 
     def __init__(self, master, ppm_path, filename=""):
         super().__init__(master)
@@ -822,10 +893,38 @@ class NoDataPreviewWindow(tk.Toplevel):
 
         toolbar = ttk.Frame(self, padding=4)
         toolbar.pack(fill="x")
+
+        # Pan-Pfeile: fixe Sprünge (wie Bild-Auf/-Ab) in den jeweils
+        # naechsten, noch nicht sichtbaren Bereich.
+        ttk.Button(toolbar, text="◄", width=3,
+                   command=lambda: self.canvas.xview_scroll(-1, "pages")).pack(side="left")
+        ttk.Button(toolbar, text="▲", width=3,
+                   command=lambda: self.canvas.yview_scroll(-1, "pages")).pack(side="left", padx=(2, 0))
+        ttk.Button(toolbar, text="▼", width=3,
+                   command=lambda: self.canvas.yview_scroll(1, "pages")).pack(side="left", padx=(2, 0))
+        ttk.Button(toolbar, text="►", width=3,
+                   command=lambda: self.canvas.xview_scroll(1, "pages")).pack(side="left", padx=(2, 0))
+
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
+
         ttk.Button(toolbar, text="–", width=3, command=lambda: self._zoom(-1)).pack(side="left")
         ttk.Button(toolbar, text="+", width=3, command=lambda: self._zoom(1)).pack(side="left", padx=(4, 0))
         ttk.Button(toolbar, text="100%", command=self._zoom_reset).pack(side="left", padx=(8, 0))
-        ttk.Label(toolbar, text="Mausrad = Zoom, Ziehen (linke Maustaste) = Pan",
+
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
+
+        # Ecken-Zoom: springt direkt an eine Ecke des Tiffs (Massstab 1:1.8),
+        # zur schnellen Kontrolle der Rand-NoData-Pixel ohne manuelles Pannen.
+        ttk.Button(toolbar, text="↖", width=3,
+                   command=lambda: self._zoom_to_corner(0.0, 0.0)).pack(side="left")
+        ttk.Button(toolbar, text="↗", width=3,
+                   command=lambda: self._zoom_to_corner(1.0, 0.0)).pack(side="left", padx=(2, 0))
+        ttk.Button(toolbar, text="↙", width=3,
+                   command=lambda: self._zoom_to_corner(0.0, 1.0)).pack(side="left", padx=(2, 0))
+        ttk.Button(toolbar, text="↘", width=3,
+                   command=lambda: self._zoom_to_corner(1.0, 1.0)).pack(side="left", padx=(2, 0))
+
+        ttk.Label(toolbar, text="Ziehen (linke Maustaste) = Pan",
                   font=("", 8)).pack(side="left", padx=(12, 0))
 
         self.canvas = tk.Canvas(self, background="#303030", highlightthickness=0)
@@ -833,9 +932,6 @@ class NoDataPreviewWindow(tk.Toplevel):
 
         self.canvas.bind("<ButtonPress-1>", lambda e: self.canvas.scan_mark(e.x, e.y))
         self.canvas.bind("<B1-Motion>", lambda e: self.canvas.scan_dragto(e.x, e.y, gain=1))
-        self.canvas.bind("<MouseWheel>", self._on_mousewheel)    # Windows
-        self.canvas.bind("<Button-4>", lambda _e: self._zoom(1))  # Linux (Vollständigkeit)
-        self.canvas.bind("<Button-5>", lambda _e: self._zoom(-1))
 
         self._render()
 
@@ -864,8 +960,16 @@ class NoDataPreviewWindow(tk.Toplevel):
         self._zoom_idx = self._ZOOM_STEPS.index(1.0)
         self._render()
 
-    def _on_mousewheel(self, event):
-        self._zoom(1 if event.delta > 0 else -1)
+    def _zoom_to_corner(self, x_frac, y_frac):
+        """Springt an eine Ecke des Tiffs, Massstab ca. 1:1.8 (x_frac/y_frac:
+        0.0 = linker/oberer Rand, 1.0 = rechter/unterer Rand)."""
+        img = self._base_img.subsample(self._CORNER_SUBSAMPLE).zoom(self._CORNER_ZOOM)
+        self._display_img = img
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=img)
+        self.canvas.config(scrollregion=(0, 0, img.width(), img.height()))
+        self.canvas.xview_moveto(x_frac)
+        self.canvas.yview_moveto(y_frac)
 
 
 # ─── Haupt-App ────────────────────────────────────────────────────────────────
@@ -895,6 +999,9 @@ class GDWHApp(tk.Tk):
         self._osgeo_python  = _detect_osgeo_python()
         self._osgeo_lbl     = None
         self._osgeo_status  = None
+        self._staging_dir     = _detect_staging_dir()
+        self._staging_lbl     = None
+        self._staging_status  = None
 
         self._build_ui()
         self._on_gds_change()
@@ -957,6 +1064,27 @@ class GDWHApp(tk.Tk):
                     command=self._set_osgeo_python).pack(side="right")
         self._update_osgeo_label()
 
+        # Lokaler Staging-Ordner Zeile (Performance, siehe _osgeo_runner.py:
+        # Quelle/bestehendes Ziel werden dorthin gespiegelt, verarbeitet, dann
+        # zurueckkopiert - schnelleres Laufwerk als das Eingangs-/GDWH-
+        # Netzlaufwerk, z.B. Y:\ auf der VDI)
+        self._staging_frame = ttk.Frame(self)
+        self._staging_frame.pack(fill="x", padx=12, pady=(2, 0))
+        staging_lbl_static = ttk.Label(self._staging_frame, text="Lokaler Temp-Ordner (Staging):", font=("", 9))
+        staging_lbl_static.pack(side="left")
+        self._dim_labels.append(staging_lbl_static)
+
+        self._staging_lbl = ttk.Label(self._staging_frame, font=("Courier New", 8),
+                                       text=self._staging_dir or "(kein Staging – direkt übers Netzlaufwerk)")
+        self._staging_lbl.pack(side="left", padx=(6, 0))
+
+        self._staging_status = ttk.Label(self._staging_frame, font=("", 8, "bold"))
+        self._staging_status.pack(side="left", padx=(6, 0))
+
+        ttk.Button(self._staging_frame, text="Ändern…",
+                    command=self._set_staging_dir).pack(side="right")
+        self._update_staging_label()
+
         # Scrollbarer Formular-Bereich
         outer = ttk.Frame(self)
         outer.pack(fill="both", expand=True, padx=12, pady=6)
@@ -1001,9 +1129,16 @@ class GDWHApp(tk.Tk):
         # Buttons
         self._btn_row = ttk.Frame(self)
         self._btn_row.pack(fill="x", padx=12, pady=(0, 10))
-        self.start_btn = ttk.Button(self._btn_row, text="▶   IMPORT STARTEN",
-                                     command=self._start_import)
-        self.start_btn.pack(side="right", ipadx=22, ipady=7)
+        # tk.Button (statt ttk.Button) für direkte Textfarben-Kontrolle:
+        # orange solange nicht alle Pflichtfelder ausgefüllt sind, grün sobald
+        # startbereit (siehe _update_start_btn_state) – analog zu den
+        # "Check - NameFormat"-Buttons.
+        self.start_btn = tk.Button(self._btn_row, text="▶   IMPORT STARTEN",
+                                    font=("Segoe UI", 10, "bold"),
+                                    relief="flat", cursor="hand2",
+                                    padx=22, pady=7,
+                                    command=self._start_import)
+        self.start_btn.pack(side="right")
         ttk.Button(self._btn_row, text="Log löschen",
                     command=self._clear_log).pack(side="right", padx=(0, 10))
         self._terminal_btn = ttk.Button(self._btn_row, text="Terminal ▾",
@@ -1077,7 +1212,7 @@ class GDWHApp(tk.Tk):
         self.fix_nodata_var = tk.BooleanVar(value=True)
         self.fix_nodata_cb = ttk.Checkbutton(
             sec, variable=self.fix_nodata_var,
-            text="Falsche NoData-Pixel in Nutzdaten vorkorrigieren")
+            text="ADS100: fixing false NoData pixels in DATA",)
         self.fix_nodata_cb.grid(row=r + 1, column=2, sticky="w", padx=(16, 0), pady=3)
         r += 2
 
@@ -1157,6 +1292,22 @@ class GDWHApp(tk.Tk):
         sec.columnconfigure(1, weight=1)
         r = 0
 
+        # Ziel (GDWH-BUCKET Path) – zuerst, damit das Zielpackage vor dem
+        # Data-Input Path gewählt wird
+        ttk.Label(sec, text="GDWH-BUCKET Path,\n(GDWH-Datapackage):", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
+        self.ziel_var = tk.StringVar()
+        ttk.Entry(sec, textvariable=self.ziel_var
+                   ).grid(row=r, column=1, sticky="ew", padx=(8, 4), pady=3)
+        ttk.Button(sec, text="Ordner…",
+                    command=lambda: self._browse(self.ziel_var, must_exist=False)
+                    ).grid(row=r, column=2, pady=3)
+        ziel_hint = ttk.Label(sec,
+            text="Enthält GDS-Ordner vorletzter Ebene  (z.B. …\\SB_DSM\\2025_AREA_DSM)",
+            font=("", 8))
+        ziel_hint.grid(row=r+1, column=1, sticky="w", padx=(8, 0))
+        self._dim_labels.append(ziel_hint)
+        r += 1
+
         # INPUT_FOLDER (nur SB_DOP_16) – Data-Input Path wird automatisch abgeleitet
         self.if_frame = ttk.Frame(sec)
         self.if_frame.grid(row=r, column=0, columnspan=3, sticky="ew")
@@ -1202,21 +1353,6 @@ class GDWHApp(tk.Tk):
         self.quelle_hint = ttk.Label(self.quelle_frame, font=("", 8))
         self.quelle_hint.grid(row=1, column=1, sticky="w", padx=(8, 0))
         self._dim_labels.append(self.quelle_hint)
-        r += 1
-
-        # Ziel
-        ttk.Label(sec, text="GDWH-BUCKET Path,\n(GDWH-Datapackage):", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
-        self.ziel_var = tk.StringVar()
-        ttk.Entry(sec, textvariable=self.ziel_var
-                   ).grid(row=r, column=1, sticky="ew", padx=(8, 4), pady=3)
-        ttk.Button(sec, text="Ordner…",
-                    command=lambda: self._browse(self.ziel_var, must_exist=False)
-                    ).grid(row=r, column=2, pady=3)
-        ziel_hint = ttk.Label(sec,
-            text="Enthält GDS-Ordner vorletzter Ebene  (z.B. …\\SB_DSM\\2025_AREA_DSM)",
-            font=("", 8))
-        ziel_hint.grid(row=r+1, column=1, sticky="w", padx=(8, 0))
-        self._dim_labels.append(ziel_hint)
 
     def _fwd_wheel_to_canvas(self, event):
         """Mausrad über Combobox scrollt den Canvas, ändert Auswahl nicht."""
@@ -1346,6 +1482,7 @@ class GDWHApp(tk.Tk):
 
         # OSGeo4W Status-Label (ok/err Farbe unabhängig vom Theme-Switch)
         self._update_osgeo_label()
+        self._update_staging_label()
 
         # Spezifisch gefärbte Labels
         for lbl in self._dim_labels:
@@ -1362,6 +1499,10 @@ class GDWHApp(tk.Tk):
         for btn in self._check_format_btns:
             try: self._set_check_btn_state(btn, getattr(btn, "_check_state", "idle"))
             except tk.TclError: pass
+
+        # "IMPORT STARTEN"-Button: Textfarbe (amber/grün) neu bewerten
+        if hasattr(self, "start_btn"):
+            self._update_start_btn_state()
 
         self._set_titlebar_dark(dark)
 
@@ -1389,6 +1530,34 @@ class GDWHApp(tk.Tk):
             self._osgeo_python = path
             _save_osgeo_config(path)
             self._update_osgeo_label()
+
+    # ── Lokaler Staging-Ordner Verwaltung ─────────────────────────────────────
+    def _update_staging_label(self):
+        T = DARK if self._dark else LIGHT
+        if self._staging_dir:
+            self._staging_lbl.config(text=self._staging_dir)
+            drive = os.path.splitdrive(self._staging_dir)[0] + "\\"
+            if os.path.isdir(drive):
+                self._staging_status.config(text="✓", foreground=T["ok"])
+            else:
+                self._staging_status.config(text="✗ Laufwerk nicht verfügbar", foreground=T["err"])
+        else:
+            self._staging_lbl.config(text="(kein Staging – direkt übers Netzlaufwerk)")
+            self._staging_status.config(text="")
+
+    def _set_staging_dir(self):
+        init_dir = self._staging_dir
+        if not (init_dir and os.path.isdir(os.path.splitdrive(init_dir)[0] + "\\")):
+            init_dir = "C:\\"
+        path = filedialog.askdirectory(
+            title="Lokalen Staging-Ordner wählen (z.B. Y:\\ oder D:\\)",
+            initialdir=init_dir,
+        )
+        if path:
+            path = path.replace("/", "\\")
+            self._staging_dir = path
+            _save_staging_config(path)
+            self._update_staging_label()
 
     def _open_catalog_portal(self, host):
         """Oeffnet den GDWH-Catalog-Import-Link (PROD/INT) des gewaehlten GDS im Standardbrowser."""
@@ -1839,7 +2008,13 @@ class GDWHApp(tk.Tk):
         else:
             ok = ok and bool(self.lineid_w.get_ids())
 
-        self.start_btn.config(state=("normal" if ok else "disabled"))
+        T = DARK if self._dark else LIGHT
+        color = T["ok"] if ok else T["hint"]
+        self.start_btn.config(
+            state=("normal" if ok else "disabled"),
+            fg=color, disabledforeground=color,
+            bg=T["btn"], activebackground=T["btn_hover"],
+        )
 
     def _on_done(self, success):
         self._running = False
@@ -2130,6 +2305,7 @@ class GDWHApp(tk.Tk):
             "script_22":        SCRIPT_22,
             "script_3":         SCRIPT_3,
             "fix_false_nodata": bool(meta.get("FixFalseNodata")),
+            "staging_dir":      self._staging_dir,
         }
         tmp = tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False, encoding="utf-8"
