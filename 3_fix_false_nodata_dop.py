@@ -83,7 +83,7 @@ Verwendung:
   ersetzen, mit Backup der Originale vorher:
     python fix_false_nodata_dop.py --input-dir ./dop_tiles --in-place --backup-dir ./dop_tiles_backup
 
-  Optional CSV-Report der Kontroll-/Warnfaelle:
+  Optional CSV-Report aller klassifizierten Gruppen (Diagnose):
     python fix_false_nodata_dop.py --input-dir ./dop_tiles --output-dir ./dop_tiles_fixed --report report.csv
 """
 
@@ -237,6 +237,8 @@ def classify_mask(mask_zero, band_arrays_rgb, nodata_value, threshold=25000,
     for label_id in range(1, n_features + 1):
         size = int(sizes[label_id - 1])
         ring_close_fraction = None
+        fill_ratio = None
+        border_contact_px = None
 
         if label_id not in candidate_label_ids:
             # Stufe A nicht erfuellt -> falsch, B-D werden gar nicht erst
@@ -308,7 +310,9 @@ def classify_mask(mask_zero, band_arrays_rgb, nodata_value, threshold=25000,
             "label_id": label_id,
             "size_px": size,
             "touches_border": touches_border,
+            "border_contact_px": border_contact_px,
             "ring_close_fraction": ring_close_fraction,
+            "fill_ratio": fill_ratio,
             "decision": decision,
         })
 
@@ -369,8 +373,8 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
                   enable_fill_ratio_check=False):
     """
     Liest ein RGB-Tile, korrigiert falsche NoData-Pixel und schreibt das
-    Ergebnis nach dst_path. Gibt Zusammenfassungszahlen und allfaellige
-    Kontroll-/Warnfaelle zurueck (fuer den CSV-Report).
+    Ergebnis nach dst_path. Gibt Zusammenfassungszahlen und alle
+    klassifizierten Gruppen zurueck (fuer den CSV-Report/Diagnose).
 
     nodata_value:
       Der zu korrigierende NoData-Zielwert (0 -> schwarz, 255 -> weiss),
@@ -481,7 +485,11 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
         enable_gradient_check=enable_gradient_check,
         enable_fill_ratio_check=enable_fill_ratio_check,
     )
-    warning_rows = [r for r in log_rows if "CHECK" in r["decision"]]
+    # group_rows: alle klassifizierten Gruppen dieses Tiles (fuer --report/
+    # Diagnose). Frueher nur auf "CHECK"-Faelle gefiltert (Stufe C, alte
+    # Klassifikation) - diese Kennzeichnung existiert seit der Stufen-A-E-
+    # Ueberarbeitung nicht mehr, der Filter war seither immer leer.
+    group_rows = log_rows
 
     # Richtung: bei 0 (schwarz) nach oben, bei 255 (weiss) nach unten -
     # falsche Pixel bewegen sich immer vom NoData-Zielwert weg.
@@ -551,7 +559,7 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
         return {
             "n_groups": len(log_rows),
             "n_increment_px": int(increment_mask.sum()),
-            "warning_rows": warning_rows,
+            "group_rows": group_rows,
             "tfw": "kopiert" if sidecar_copied else ("erzeugt" if create_options else "keine"),
             "epsg_fallback": fallback_epsg if used_fallback_epsg else None,
             "alte_baender_verworfen": n_bands - 3,
@@ -568,7 +576,7 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
         return {
             "n_groups": 0,
             "n_increment_px": 0,
-            "warning_rows": [],
+            "group_rows": [],
             "tfw": "kopiert" if sidecar_copied else ("erzeugt" if create_options else "keine"),
             "epsg_fallback": None,
             "alte_baender_verworfen": 0,
@@ -596,7 +604,7 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
     return {
         "n_groups": len(log_rows),
         "n_increment_px": int(increment_mask.sum()),
-        "warning_rows": warning_rows,
+        "group_rows": group_rows,
         "tfw": "kopiert" if sidecar_copied else ("erzeugt" if create_options else "keine"),
         "epsg_fallback": None,
         "alte_baender_verworfen": 0,
@@ -715,7 +723,7 @@ def main():
     parser.add_argument("--backup-dir",
                          help="Nur zusammen mit --in-place: Ordner, in den die unveraenderten "
                               "Originale (tif + tfw) vor dem Ueberschreiben kopiert werden.")
-    parser.add_argument("--report", help="Optional: CSV-Pfad fuer Kontroll-/Warnfaelle")
+    parser.add_argument("--report", help="Optional: CSV-Pfad fuer alle klassifizierten Gruppen (Diagnose)")
 
     args = parser.parse_args()
 
@@ -803,10 +811,9 @@ def main():
             print(
                 f"{name}: {result['n_groups']} Gruppen gefunden, "
                 f"{result['n_increment_px']} Pixel angehoben, "
-                f"{len(result['warning_rows'])} Kontroll-/Warnfaelle, "
                 f"tfw: {result['tfw']}{extra}"
             )
-            for row in result["warning_rows"]:
+            for row in result["group_rows"]:
                 all_report_rows.append({"tile": name, **row})
             n_ok += 1
         except Exception as exc:
@@ -818,11 +825,13 @@ def main():
     if args.report and all_report_rows:
         with open(args.report, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
-                f, fieldnames=["tile", "label_id", "size_px", "touches_border", "decision"]
+                f, fieldnames=["tile", "label_id", "size_px", "touches_border",
+                               "border_contact_px", "ring_close_fraction",
+                               "fill_ratio", "decision"]
             )
             writer.writeheader()
             writer.writerows(all_report_rows)
-        print(f"Warn-Report geschrieben: {args.report} ({len(all_report_rows)} Zeilen)")
+        print(f"Report geschrieben: {args.report} ({len(all_report_rows)} Zeilen)")
 
 
 def _default_output_path(input_path):

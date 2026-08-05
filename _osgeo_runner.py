@@ -68,8 +68,10 @@ def _run_fix_false_nodata(mod3, quelle, meta):
             rewrite_real_nodata_to_zero=(nodata_value == 255))
         n_px_total += result["n_increment_px"]
         print(f"  {fn}: {result['n_groups']} Gruppe(n), {result['n_increment_px']} Pixel korrigiert", flush=True)
-        for w in result["warning_rows"]:
-            print(f"  [KONTROLLE] {fn}: Gruppe {w['label_id']} ({w['size_px']} px, {w['decision']})", flush=True)
+        for g in result["group_rows"]:
+            print(f"    Gruppe {g['label_id']}: {g['size_px']} px, "
+                  f"Randkontakt={g['border_contact_px']}, "
+                  f"decision={g['decision']}", flush=True)
 
     print(f"Vorkorrektur abgeschlossen: {len(tif_files)} Datei(en), {n_px_total} Pixel insgesamt korrigiert.\n", flush=True)
 

@@ -221,7 +221,7 @@ Aktiviert man im GUI die Checkbox neben `NoData` (nur bei GDS `SB_DOP`, standard
 
 Script 1 erkennt über `meta["FixFalseNodata"]`, dass die Maske bereits gesetzt ist, und überspringt `tag_mask_on_raster()` für diese Dateien (der NoData-Tag wird trotzdem normal gesetzt). Bei deaktivierter Checkbox oder für alle anderen GDS ändert sich nichts am bisherigen Ablauf.
 
-`3_fix_false_nodata_dop.py` ist auch eigenständig per CLI nutzbar (einzelnes Tile, ganzer Ordner, mit/ohne `--in-place`, optionaler CSV-Report der Kontroll-/Warnfälle) – siehe Docstring im Skript.
+`3_fix_false_nodata_dop.py` ist auch eigenständig per CLI nutzbar (einzelnes Tile, ganzer Ordner, mit/ohne `--in-place`, optionaler CSV-Report aller klassifizierten Gruppen für Diagnose via `--report`) – siehe Docstring im Skript.
 
 ---
 
@@ -276,7 +276,7 @@ So bleibt nachvollziehbar, welche AREAS für welches GDS importiert wurden.
 
 ## Tests
 
-`test_functions.py` prüft die reinen Python-Funktionen der Sub-Scripts, ohne dass OSGeo4W oder echte Dateien benötigt werden. `osgeo`/`gdal` wird als Mock registriert.
+`test_functions.py` prüft die reinen Python-Funktionen der Sub-Scripts, ohne dass OSGeo4W oder echte Dateien benötigt werden. `osgeo`/`gdal` wird als Mock registriert. Die `classify_mask`-Tests (Script 3, Stufen A-E inkl. Regressionstest für den WALLIS_SAASTAL-Vorfall) brauchen echtes `scipy` (nicht mockbar, da echtes Connected-Component-Labeling geprüft wird) – ist `scipy` nicht installiert, werden nur diese Tests übersprungen, der Rest der Suite läuft normal.
 
 ```bash
 python test_functions.py

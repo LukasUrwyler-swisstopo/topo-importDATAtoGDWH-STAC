@@ -8,8 +8,10 @@ Ausfuehren:
 """
 
 import importlib.util
+import inspect
 import os
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -52,6 +54,21 @@ def _import_script(filename):
 allGDS  = _import_script("1_allGDS_upload_GDWH_withCHECKxml.py")
 dop16   = _import_script("2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py")
 organiz = _import_script("2_1_SB_DOP_16_FOLDERorganize_by_lineID.py")
+
+# osgeo_runner hat KEINE osgeo/gdal-Abhaengigkeit (reine Staging-/Orchestrierungs-
+# Logik), kann also immer importiert werden.
+osgeo_runner = _import_script("_osgeo_runner.py")
+
+# fix_false_nodata (Script 3) braucht echtes scipy (ndimage.label) fuer
+# sinnvolle Tests der Connected-Component-Klassifikation - das laesst sich
+# nicht sinnvoll mocken. Import defensiv, damit die restliche Testsuite auch
+# ohne installiertes scipy laeuft (TestClassifyMask wird dann uebersprungen).
+try:
+    fixnodata = _import_script("3_fix_false_nodata_dop.py")
+    _FIXNODATA_IMPORT_ERROR = None
+except Exception as _e:
+    fixnodata = None
+    _FIXNODATA_IMPORT_ERROR = str(_e)
 
 
 # ============================================================
@@ -538,6 +555,366 @@ class TestParseUndFormatKombiniert(unittest.TestCase):
         ids = ["20200913_1054_12501", "20200913_1104_12501"]
         times = [allGDS.format_iso8601_hundredths(allGDS.parse_line_id_to_hundredths(l)) for l in ids]
         self.assertEqual(times, ["2020-09-13T10:54:00.00", "2020-09-13T11:04:00.00"])
+
+
+# ============================================================
+#  copy_with_retry_md5  (aus allGDS)
+#  MD5 wird im selben Lese-/Schreibdurchgang wie das Kopieren berechnet,
+#  statt die Quelldatei danach separat nochmals komplett einzulesen.
+# ============================================================
+class TestCopyWithRetryMd5(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.src = os.path.join(self.tmpdir, "quelle.bin")
+        with open(self.src, "wb") as f:
+            f.write(os.urandom(50_000))
+        self.dst = os.path.join(self.tmpdir, "ziel.bin")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_md5_identisch_zu_calculate_md5(self):
+        erwartet = allGDS.calculate_md5(self.src)
+        md5 = allGDS.copy_with_retry_md5(self.src, self.dst)
+        self.assertEqual(md5, erwartet)
+
+    def test_inhalt_und_groesse_identisch(self):
+        allGDS.copy_with_retry_md5(self.src, self.dst)
+        with open(self.src, "rb") as f:
+            src_bytes = f.read()
+        with open(self.dst, "rb") as f:
+            dst_bytes = f.read()
+        self.assertEqual(src_bytes, dst_bytes)
+        self.assertEqual(os.path.getsize(self.src), os.path.getsize(self.dst))
+
+
+# ============================================================
+#  _copytree_merge  (aus _osgeo_runner.py)
+#  Ersatz fuer shutil.copytree(..., dirs_exist_ok=True), da dieser
+#  Parameter erst ab Python 3.8 existiert (OSGeo4W/QGIS-Python kann aelter
+#  sein). Zentral fuer das Y:\-Staging: bestehender Zielordner-Inhalt
+#  (z.B. files.csv aus frueheren Laeufen) darf nicht verloren gehen.
+# ============================================================
+class TestCopytreeMerge(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.src = os.path.join(self.tmpdir, "src")
+        self.dst = os.path.join(self.tmpdir, "dst")
+        os.makedirs(self.src)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write(self, root, relpath, content):
+        full = os.path.join(root, relpath)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def test_ziel_existiert_noch_nicht(self):
+        self._write(self.src, "tile1.tif", "neu")
+        osgeo_runner._copytree_merge(self.src, self.dst)
+        with open(os.path.join(self.dst, "tile1.tif"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "neu")
+
+    def test_bestehende_dateien_im_ziel_bleiben_erhalten(self):
+        # Simuliert files.csv/NV-Ordner aus einem frueheren Lauf.
+        self._write(self.dst, "files.csv", "alte_zeile")
+        self._write(self.dst, "NV/alt_tile.tif", "alt")
+
+        self._write(self.src, "files.csv", "alte_zeile\nneue_zeile")
+        self._write(self.src, "NV/alt_tile.tif", "alt")
+        self._write(self.src, "NV/neu_tile.tif", "neu")
+
+        osgeo_runner._copytree_merge(self.src, self.dst)
+
+        with open(os.path.join(self.dst, "files.csv"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "alte_zeile\nneue_zeile")
+        self.assertTrue(os.path.isfile(os.path.join(self.dst, "NV", "alt_tile.tif")))
+        self.assertTrue(os.path.isfile(os.path.join(self.dst, "NV", "neu_tile.tif")))
+
+    def test_gleichnamige_datei_wird_ueberschrieben(self):
+        self._write(self.dst, "files.csv", "alter_stand")
+        self._write(self.src, "files.csv", "neuer_stand")
+        osgeo_runner._copytree_merge(self.src, self.dst)
+        with open(os.path.join(self.dst, "files.csv"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "neuer_stand")
+
+
+# ============================================================
+#  _write_band_chunked  (aus Script 3)
+#  Reine Verifikation, dass zeilenweises Schreiben in Bloecken exakt dem
+#  Original-Array entspricht - unabhaengig von scipy, deshalb hier statt in
+#  TestClassifyMask (die vom vorhandenen scipy abhaengt).
+# ============================================================
+class _FakeRasterBand:
+    def __init__(self, shape, dtype):
+        self.buf = np.zeros(shape, dtype=dtype)
+
+    def WriteArray(self, chunk, xoff=0, yoff=0):
+        rows, cols = chunk.shape
+        self.buf[yoff:yoff + rows, xoff:xoff + cols] = chunk
+
+
+@unittest.skipIf(fixnodata is None, f"3_fix_false_nodata_dop.py nicht importierbar: {_FIXNODATA_IMPORT_ERROR}")
+class TestWriteBandChunked(unittest.TestCase):
+
+    def test_glatte_groesse(self):
+        arr = np.random.randint(0, 256, size=(2000, 500), dtype=np.uint8)
+        band = _FakeRasterBand(arr.shape, arr.dtype)
+        fixnodata._write_band_chunked(band, arr, chunk_rows=1000)
+        self.assertTrue(np.array_equal(band.buf, arr))
+
+    def test_ungerade_groesse_letzter_chunk_kleiner(self):
+        arr = np.random.randint(0, 256, size=(2437, 137), dtype=np.uint8)
+        band = _FakeRasterBand(arr.shape, arr.dtype)
+        fixnodata._write_band_chunked(band, arr, chunk_rows=1000)
+        self.assertTrue(np.array_equal(band.buf, arr))
+
+    def test_kleinere_chunk_groesse(self):
+        arr = np.random.randint(0, 256, size=(500, 500), dtype=np.uint8)
+        band = _FakeRasterBand(arr.shape, arr.dtype)
+        fixnodata._write_band_chunked(band, arr, chunk_rows=137)
+        self.assertTrue(np.array_equal(band.buf, arr))
+
+
+# ============================================================
+#  classify_mask  (aus Script 3, 3_fix_false_nodata_dop.py)
+#  Kernlogik der Echt/Falsch-NoData-Klassifikation (Stufen A-E). Deckt
+#  insbesondere den Produktionsvorfall vom 05.08.2026 (WALLIS_SAASTAL) ab:
+#  Stufe D/E muessen standardmaessig deaktiviert bleiben, siehe README
+#  "Vorkorrektur falscher NoData-Pixel (SB_DOP, optional)".
+# ============================================================
+@unittest.skipIf(fixnodata is None, f"3_fix_false_nodata_dop.py nicht importierbar: {_FIXNODATA_IMPORT_ERROR}")
+class TestClassifyMask(unittest.TestCase):
+
+    def _flat_bands(self, size_y, size_x, fill_value, dtype=np.uint8):
+        return [np.full((size_y, size_x), fill_value, dtype=dtype) for _ in range(3)]
+
+    # -- Stufe A: Groesse --
+    def test_stufe_a_kleine_gruppe_ist_falsch(self):
+        mask = np.zeros((50, 50), dtype=bool)
+        mask[0:5, 0:5] = True  # 25 px, weit unter Threshold, beruehrt sogar den Rand
+        bands = self._flat_bands(50, 50, 100)
+        for b in bands:
+            b[mask] = 0
+        inc, logs = fixnodata.classify_mask(mask, bands, 0, threshold=1000)
+        self.assertEqual(logs[0]["decision"], "false_nodata")
+        self.assertTrue(inc[mask].all())
+
+    def test_stufe_a_grenzwert_gleich_threshold_ist_kandidat(self):
+        size = 300
+        mask = np.zeros((size, size), dtype=bool)
+        mask[0, 0:100] = True  # exakt 100 px, volle Randzeile
+        bands = self._flat_bands(size, size, 100)
+        for b in bands:
+            b[mask] = 0
+        inc, logs = fixnodata.classify_mask(mask, bands, 0, threshold=100, min_border_contact=100)
+        self.assertEqual(logs[0]["size_px"], 100)
+        self.assertEqual(logs[0]["decision"], "real_nodata")
+
+    def test_stufe_a_knapp_unter_threshold_ist_falsch(self):
+        size = 300
+        mask = np.zeros((size, size), dtype=bool)
+        mask[0, 0:99] = True  # 99 px, knapp unter Threshold 100
+        bands = self._flat_bands(size, size, 100)
+        for b in bands:
+            b[mask] = 0
+        inc, logs = fixnodata.classify_mask(mask, bands, 0, threshold=100, min_border_contact=100)
+        self.assertEqual(logs[0]["decision"], "false_nodata")
+
+    # -- Stufe B: ueberhaupt Randkontakt --
+    def test_stufe_b_grosse_gruppe_mitten_im_tile_ist_falsch(self):
+        mask = np.zeros((100, 100), dtype=bool)
+        mask[40:60, 40:60] = True  # 400 px, beruehrt keinen Rand
+        bands = self._flat_bands(100, 100, 100)
+        for b in bands:
+            b[mask] = 0
+        inc, logs = fixnodata.classify_mask(mask, bands, 0, threshold=100, min_border_contact=10)
+        self.assertEqual(logs[0]["decision"], "false_nodata")
+        self.assertFalse(logs[0]["touches_border"])
+
+    # -- Stufe C: Randkontakt-Laenge (der urspruengliche Gletscher-Blowout-Fall) --
+    def test_stufe_c_schmaler_keil_am_rand_ist_falsch(self):
+        size = 300
+        mask = np.zeros((size, size), dtype=bool)
+        for y in range(230, size):
+            half_w = max(2, (size - 1 - y) // 3)
+            mask[y, 150 - half_w:150 + half_w] = True
+        bands = self._flat_bands(size, size, 120)
+        for b in bands:
+            b[mask] = 0
+        inc, logs = fixnodata.classify_mask(mask, bands, 0, threshold=1000, min_border_contact=100)
+        self.assertEqual(logs[0]["decision"], "false_nodata")
+        self.assertTrue(logs[0]["touches_border"])
+        self.assertLess(logs[0]["border_contact_px"], 100)
+
+    def test_stufe_c_lange_perimeterkante_ist_echt(self):
+        size = 300
+        mask = np.zeros((size, size), dtype=bool)
+        mask[280:300, 0:250] = True  # lange Kontaktzone am unteren Rand
+        bands = self._flat_bands(size, size, 120)
+        for b in bands:
+            b[mask] = 0
+        inc, logs = fixnodata.classify_mask(mask, bands, 0, threshold=1000, min_border_contact=100)
+        self.assertEqual(logs[0]["decision"], "real_nodata")
+
+    def test_stufe_c_ecke_zaehlt_beide_kanten_zusammen(self):
+        size = 300
+        mask = np.zeros((size, size), dtype=bool)
+        for i in range(60):
+            mask[0:60 - i, i] = True  # Dreieck oben links, beruehrt 2 Kanten je kurz
+        bands = self._flat_bands(size, size, 120)
+        for b in bands:
+            b[mask] = 0
+        inc, logs = fixnodata.classify_mask(mask, bands, 0, threshold=1000, min_border_contact=50)
+        self.assertEqual(logs[0]["decision"], "real_nodata")
+
+    # -- Regressionstest Vorfall WALLIS_SAASTAL (05.08.2026) --
+    def test_regression_weicher_uebergang_bleibt_echt_per_default(self):
+        """
+        Stufe D/E sind seit diesem Vorfall standardmaessig deaktiviert:
+        eine riesige, echte NoData-Flaeche mit weichem (gefeathertem)
+        inneren Uebergang wurde faelschlich als 'falsch' erkannt und
+        angehoben statt maskiert. Dieser Test stellt sicher, dass eine
+        solche Flaeche mit den Standard-Parametern 'echt' bleibt.
+        """
+        size = 300
+        mask = np.zeros((size, size), dtype=bool)
+        mask[:, 0:150] = True
+        bands = self._flat_bands(size, size, 120)
+        for b in bands:
+            b[mask] = 0
+            b[:, 150] = 5  # weicher/gefeatherter Uebergang, nahe 0
+        inc, logs = fixnodata.classify_mask(mask, bands, 0, threshold=1000, min_border_contact=100)
+        self.assertEqual(logs[0]["decision"], "real_nodata")
+        self.assertFalse(inc[mask].any())
+
+    def test_stufe_d_erkennt_weichen_uebergang_wenn_explizit_aktiviert(self):
+        size = 300
+        mask = np.zeros((size, size), dtype=bool)
+        mask[:, 0:150] = True
+        bands = self._flat_bands(size, size, 120)
+        for b in bands:
+            b[mask] = 0
+            b[:, 150] = 5
+        inc, logs = fixnodata.classify_mask(
+            mask, bands, 0, threshold=1000, min_border_contact=100,
+            enable_gradient_check=True)
+        self.assertEqual(logs[0]["decision"], "false_nodata")
+
+    def test_stufe_d_harter_schnitt_bleibt_echt_wenn_aktiviert(self):
+        size = 300
+        mask = np.zeros((size, size), dtype=bool)
+        mask[:, 0:150] = True
+        bands = self._flat_bands(size, size, 120)
+        for b in bands:
+            b[mask] = 0
+        inc, logs = fixnodata.classify_mask(
+            mask, bands, 0, threshold=1000, min_border_contact=100,
+            enable_gradient_check=True)
+        self.assertEqual(logs[0]["decision"], "real_nodata")
+
+    # -- Automatische Gradient-Toleranz (nur bei enable_gradient_check) --
+    def test_gradient_toleranz_automatik_weiss_grenzwert(self):
+        size = 300
+        for nachbarwert, erwartet in ((220, "false_nodata"), (219, "real_nodata")):
+            mask = np.zeros((size, size), dtype=bool)
+            mask[:, 0:150] = True
+            bands = self._flat_bands(size, size, 120)
+            for b in bands:
+                b[mask] = 255
+                b[:, 150] = nachbarwert
+            inc, logs = fixnodata.classify_mask(
+                mask, bands, 255, threshold=1000, min_border_contact=100,
+                enable_gradient_check=True)
+            self.assertEqual(logs[0]["decision"], erwartet,
+                              f"nodata=255, Nachbarwert={nachbarwert}")
+
+    def test_gradient_toleranz_automatik_schwarz_grenzwert(self):
+        size = 300
+        for nachbarwert, erwartet in ((20, "false_nodata"), (21, "real_nodata")):
+            mask = np.zeros((size, size), dtype=bool)
+            mask[:, 0:150] = True
+            bands = self._flat_bands(size, size, 120)
+            for b in bands:
+                b[mask] = 0
+                b[:, 150] = nachbarwert
+            inc, logs = fixnodata.classify_mask(
+                mask, bands, 0, threshold=1000, min_border_contact=100,
+                enable_gradient_check=True)
+            self.assertEqual(logs[0]["decision"], erwartet,
+                              f"nodata=0, Nachbarwert={nachbarwert}")
+
+    # -- Stufe E: Bounding-Box-Fuellgrad (nur bei enable_fill_ratio_check) --
+    def test_stufe_e_kompakter_block_bleibt_echt(self):
+        size = 300
+        mask = np.zeros((size, size), dtype=bool)
+        mask[:, 0:150] = True
+        bands = self._flat_bands(size, size, 120)
+        for b in bands:
+            b[mask] = 0
+        inc, logs = fixnodata.classify_mask(
+            mask, bands, 0, threshold=1000, min_border_contact=100,
+            enable_gradient_check=True, enable_fill_ratio_check=True)
+        self.assertEqual(logs[0]["decision"], "real_nodata")
+
+    def test_stufe_e_duenne_verzweigte_form_ist_falsch(self):
+        size = 300
+        mask = np.zeros((size, size), dtype=bool)
+        mask[:, 0:5] = True
+        for y in range(0, size, 25):
+            mask[y:y + 1, 5:250] = True
+        bands = self._flat_bands(size, size, 120)
+        for b in bands:
+            b[mask] = 0
+        inc, logs = fixnodata.classify_mask(
+            mask, bands, 0, threshold=1000, min_border_contact=100,
+            enable_gradient_check=True, enable_fill_ratio_check=True)
+        self.assertEqual(logs[0]["decision"], "false_nodata")
+
+    # -- Randfaelle --
+    def test_keine_nodata_pixel_liefert_leere_liste(self):
+        mask = np.zeros((50, 50), dtype=bool)
+        bands = self._flat_bands(50, 50, 100)
+        inc, logs = fixnodata.classify_mask(mask, bands, 0)
+        self.assertEqual(logs, [])
+        self.assertFalse(inc.any())
+
+    def test_gesamtes_tile_ist_nodata_bleibt_echt(self):
+        # Kein innerer Rand vorhanden (Gruppe = ganzes Tile) -> Stufe D kann
+        # nicht widerlegen, muss "echt" bleiben.
+        mask = np.ones((50, 50), dtype=bool)
+        bands = self._flat_bands(50, 50, 0)
+        inc, logs = fixnodata.classify_mask(
+            mask, bands, 0, threshold=100, min_border_contact=10,
+            enable_gradient_check=True, enable_fill_ratio_check=True)
+        self.assertEqual(logs[0]["decision"], "real_nodata")
+
+
+# ============================================================
+#  Sicherheits-Defaults (aus Script 3)
+#  Regressionsschutz: diese Defaults wurden nach dem WALLIS_SAASTAL-
+#  Vorfall bewusst konservativ gesetzt - ein versehentliches Aendern soll
+#  hier auffallen.
+# ============================================================
+@unittest.skipIf(fixnodata is None, f"3_fix_false_nodata_dop.py nicht importierbar: {_FIXNODATA_IMPORT_ERROR}")
+class TestFixNodataSicherheitsDefaults(unittest.TestCase):
+
+    def test_classify_mask_stufe_d_e_defaults_aus(self):
+        sig = inspect.signature(fixnodata.classify_mask)
+        self.assertFalse(sig.parameters["enable_gradient_check"].default)
+        self.assertFalse(sig.parameters["enable_fill_ratio_check"].default)
+
+    def test_process_tile_defaults(self):
+        sig = inspect.signature(fixnodata.process_tile)
+        self.assertEqual(sig.parameters["threshold"].default, 25000)
+        self.assertEqual(sig.parameters["increment"].default, 7)
+        self.assertEqual(sig.parameters["min_border_contact"].default, 100)
+        self.assertFalse(sig.parameters["enable_gradient_check"].default)
+        self.assertFalse(sig.parameters["enable_fill_ratio_check"].default)
 
 
 if __name__ == "__main__":
