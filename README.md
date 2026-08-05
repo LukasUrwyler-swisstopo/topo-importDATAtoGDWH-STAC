@@ -193,12 +193,14 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 
 DOP-Mosaike enthalten teils vereinzelte Pixel oder kleine Pixelgruppen, die durch die Radiometrie zufällig auf den NoData-Wert (0,0,0 bzw. 255,255,255) fallen – z.B. in sehr dunklen Schattenzonen oder überstrahlten Flächen –, obwohl sie eigentlich gültige Nutzdaten sind. Die normale Maskenberechnung (`_compute_nodata_mask`) vergleicht pro Pixel exakt gegen den NoData-Wert und würde solche Pixel fälschlich als NoData maskieren.
 
-`3_fix_false_nodata_dop.py` unterscheidet "echtes" von "falschem" NoData über fünf Stufen (Connected-Component-Labeling, jede Stufe nur geprüft, wenn die vorherige erfüllt ist):
+`3_fix_false_nodata_dop.py` unterscheidet "echtes" von "falschem" NoData über bis zu fünf Stufen (Connected-Component-Labeling, jede Stufe nur geprüft, wenn die vorherige erfüllt ist):
 
   - **A) Grösse** der zusammenhängenden Pixelgruppe ≥ Schwelle (25'000 Pixel, Default). Kleinere Gruppen sind sofort "falsch".
   - **B/C) Randkontakt**: Gruppe muss einen Tile-Rand berühren, und zwar über mindestens `--min-border-contact` Pixel (Default 100, Summe über alle vier Kanten). Verhindert, dass grosse, zufällig an den Rand grenzende Gruppen (z.B. überstrahlte Gletscherflächen) allein wegen der Grösse als echt durchgehen.
-  - **D) Randverlauf**: am inneren (nicht auf dem Tile-Rand liegenden) Gruppenrand werden die angrenzenden Nutzdaten-Pixel geprüft. Ein harter Übergang (normale, klar verschiedene Werte) spricht für echtes NoData; ein weicher Übergang (Nachbarpixel selbst schon nahe am NoData-Wert – Überstrahlung/Schatten-Clipping) kippt die Gruppe zurück zu "falsch".
-  - **E) Bounding-Box-Füllgrad**: kompakte, block-/keilförmige Gruppen (typisch für einen Perimeter-Schnitt) bleiben "echt"; dünne, verzweigte Formen (typisch für Gletscherspalten/Grate) werden trotz A-D als "falsch" verworfen.
+  - **D) Randverlauf** (`--enable-gradient-check`, **standardmässig deaktiviert**): am inneren (nicht auf dem Tile-Rand liegenden) Gruppenrand werden die angrenzenden Nutzdaten-Pixel geprüft. Ein harter Übergang spricht für echtes NoData, ein weicher Übergang (Nachbarpixel selbst schon nahe am NoData-Wert) kippt die Gruppe zurück zu "falsch".
+  - **E) Bounding-Box-Füllgrad** (`--enable-fill-ratio-check`, **standardmässig deaktiviert**, wirkt nur zusammen mit D): kompakte, block-/keilförmige Gruppen bleiben "echt"; dünne, verzweigte Formen werden trotz A-D als "falsch" verworfen.
+
+> **Bekannte Einschränkung (Vorfall WALLIS_SAASTAL, 05.08.2026):** Stufe D nahm bei einem Mosaik aus 13 Befliegungslinien riesige, echte NoData-Flächen (mehr als die Hälfte eines Tiles) fälschlich als "falsch" an und hob deren Pixelwerte an, statt sie als NoData zu maskieren – vermutlich weil die reale Mosaik-/Perimeterkante dort weich ausgeblendet (Feathering aus der Photogrammetrie-Produktion) statt hart geschnitten ist. Die Annahme "weicher Übergang = Überstrahlung, harter Schnitt = echtes NoData" gilt also nicht für jeden Datensatz. **Stufe D und E sind deshalb bis auf Weiteres deaktiviert**, Klassifikation basiert nur auf A-C. Die beiden CLI-Flags bleiben zu Testzwecken erhalten, bis eine für Feathering robuste Alternative gefunden ist.
 
 Als "falsch" erkannte Gruppen werden um `--increment` Werte (Default **7**) vom NoData-Wert weg verschoben (0,0,0 → 7,7,7 bzw. 255,255,255 → 248,248,248) statt unverändert als NoData maskiert zu bleiben.
 

@@ -112,7 +112,8 @@ except ImportError:
 def classify_mask(mask_zero, band_arrays_rgb, nodata_value, threshold=25000,
                    connectivity=8, min_border_contact=100,
                    gradient_tolerance=None, gradient_ring_fraction=0.5,
-                   min_fill_ratio=0.15):
+                   min_fill_ratio=0.15, enable_gradient_check=False,
+                   enable_fill_ratio_check=False):
     """
     Klassifiziert zusammenhaengende Gruppen von True-Werten in mask_zero
     als "echtes NoData" (bleibt) oder "falsches NoData" (wird angehoben).
@@ -124,16 +125,30 @@ def classify_mask(mask_zero, band_arrays_rgb, nodata_value, threshold=25000,
       C) Randkontakt (Summe der Gruppenpixel auf allen vier Tile-Kanten
          zusammen, nicht nur ein Ja/Nein pro Kante - deckt auch Eck-Faelle
          ab) >= min_border_contact?   Sonst "falsch".
-      D) Nur fuer den Teil des Gruppenrands, der NICHT auf dem Tile-Rand
-         liegt (also in die Nutzdaten uebergeht): sind die direkt
-         angrenzenden Pixel mehrheitlich nahe am NoData-Wert (weicher
-         Uebergang)? Wenn ja -> trotz A-C "falsch", sonst weiter zu E.
-      E) Nur wenn D "echt" ergeben hat: Bounding-Box-Fuellgrad (Groesse der
-         Gruppe / Flaeche ihrer Bounding-Box) >= min_fill_ratio? Kompakte,
-         block-/keilfoermige Flaechen (typisch fuer einen Perimeter-Schnitt)
-         haben einen hohen Fuellgrad. Duenne, verzweigte Formen (typisch fuer
+      D) [STANDARDMAESSIG DEAKTIVIERT, siehe unten] Nur fuer den Teil des
+         Gruppenrands, der NICHT auf dem Tile-Rand liegt (also in die
+         Nutzdaten uebergeht): sind die direkt angrenzenden Pixel
+         mehrheitlich nahe am NoData-Wert (weicher Uebergang)? Wenn ja ->
+         trotz A-C "falsch", sonst weiter zu E.
+      E) [STANDARDMAESSIG DEAKTIVIERT, siehe unten] Nur wenn D "echt"
+         ergeben hat: Bounding-Box-Fuellgrad (Groesse der Gruppe / Flaeche
+         ihrer Bounding-Box) >= min_fill_ratio? Kompakte, block-/
+         keilfoermige Flaechen (typisch fuer einen Perimeter-Schnitt) haben
+         einen hohen Fuellgrad. Duenne, verzweigte Formen (typisch fuer
          Gletscherspalten/Grate) haben einen niedrigen Fuellgrad. Wenn zu
          niedrig -> trotz A-D "falsch", sonst "echt".
+
+    enable_gradient_check / enable_fill_ratio_check (Default: False):
+      Stufe D bzw. E sind seit einem Vorfall (WALLIS_SAASTAL, 05.08.2026)
+      standardmaessig DEAKTIVIERT: Stufe D nahm faelschlich riesige, echte
+      NoData-Flaechen als "falsch" an, weil deren innerer Rand bei diesem
+      Mosaik (13 Befliegungslinien) vermutlich weich ausgeblendet
+      (Feathering aus der Photogrammetrie-Produktion) statt hart
+      geschnitten ist - die Annahme "weicher Uebergang = Ueberstrahlung"
+      gilt also nicht fuer jeden Datensatz. Klassifikation basiert bis auf
+      Weiteres nur auf A-C (Groesse + Randkontakt), wie vor dieser
+      Erweiterung. Auf True setzen nur zu Testzwecken, bis eine fuer
+      Feathering robuste Alternative gefunden ist.
 
     Grund fuer Stufe C: eine grosse, ueberstrahlte Gletscherflaeche kann
     zufaellig an einen Tile-Rand grenzen, teils sogar ueber eine laengere
@@ -211,8 +226,11 @@ def classify_mask(mask_zero, band_arrays_rgb, nodata_value, threshold=25000,
     # Bounding-Boxen fuer Stufe E: ein einziger Aufruf ueber alle Labels,
     # kein zusaetzlicher Pixel-Durchgang (arbeitet auf dem bereits
     # vorliegenden labeled-Array). Nur berechnet, wenn ueberhaupt ein
-    # Kandidat existiert.
-    bounding_boxes = ndimage.find_objects(labeled) if candidate_label_ids else None
+    # Kandidat existiert UND Stufe E aktiv ist.
+    bounding_boxes = (
+        ndimage.find_objects(labeled)
+        if (candidate_label_ids and enable_fill_ratio_check) else None
+    )
 
     dilation_structure = np.ones((3, 3), dtype=bool)
 
@@ -233,6 +251,10 @@ def classify_mask(mask_zero, band_arrays_rgb, nodata_value, threshold=25000,
                 # nicht erfuellt (Randkontakt zu kurz) -> falsch, Stufe D
                 # wird nicht mehr geprueft.
                 decision = "false_nodata"
+            elif not enable_gradient_check:
+                # Stufe D deaktiviert (Default, siehe Docstring) -> A-C
+                # reichen fuer "echt", Stufe E folgt nur wenn aktiv.
+                decision = "real_nodata"
             else:
                 # Stufe D: Randverlauf am inneren (nicht auf dem Tile-Rand
                 # liegenden) Teil der Gruppe pruefen. Ein direkt
@@ -267,7 +289,7 @@ def classify_mask(mask_zero, band_arrays_rgb, nodata_value, threshold=25000,
                         # Harter Schnitt -> Stufe E pruefen.
                         decision = "real_nodata"
 
-        if decision == "real_nodata":
+        if decision == "real_nodata" and enable_fill_ratio_check:
             # Stufe E: Bounding-Box-Fuellgrad. Nutzt die bereits berechnete
             # Bounding-Box, kein zusaetzlicher Pixel-Durchgang.
             bbox = bounding_boxes[label_id - 1]
@@ -343,7 +365,8 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
                   nodata_value=0, write_mask=False,
                   rewrite_real_nodata_to_zero=False, min_border_contact=100,
                   gradient_tolerance=None, gradient_ring_fraction=0.5,
-                  min_fill_ratio=0.15):
+                  min_fill_ratio=0.15, enable_gradient_check=False,
+                  enable_fill_ratio_check=False):
     """
     Liest ein RGB-Tile, korrigiert falsche NoData-Pixel und schreibt das
     Ergebnis nach dst_path. Gibt Zusammenfassungszahlen und allfaellige
@@ -455,6 +478,8 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
         gradient_tolerance=gradient_tolerance,
         gradient_ring_fraction=gradient_ring_fraction,
         min_fill_ratio=min_fill_ratio,
+        enable_gradient_check=enable_gradient_check,
+        enable_fill_ratio_check=enable_fill_ratio_check,
     )
     warning_rows = [r for r in log_rows if "CHECK" in r["decision"]]
 
@@ -593,7 +618,8 @@ def process_tile_inplace(path, backup_dir=None, **kwargs):
     **kwargs werden 1:1 an process_tile() weitergereicht (threshold,
     increment, connectivity, write_tfw, strip_existing_mask, fallback_epsg,
     write_mask, rewrite_real_nodata_to_zero, min_border_contact,
-    gradient_tolerance, gradient_ring_fraction, min_fill_ratio).
+    gradient_tolerance, gradient_ring_fraction, min_fill_ratio,
+    enable_gradient_check, enable_fill_ratio_check).
     """
     directory = os.path.dirname(os.path.abspath(path)) or "."
     base = os.path.basename(path)
@@ -656,6 +682,13 @@ def main():
                          help="Fuenfte Bedingung fuer echtes NoData: Bounding-Box-Fuellgrad der Gruppe "
                               "(nur geprueft, wenn Stufe A-D bereits 'echt' ergeben haben), darunter gilt "
                               "sie trotzdem als falsch (duenne, verzweigte Form) (Default: 0.15)")
+    parser.add_argument("--enable-gradient-check", action="store_true",
+                         help="Stufe D (Randverlauf-Gradient) aktivieren - seit Vorfall WALLIS_SAASTAL "
+                              "(05.08.2026) standardmaessig AUS, siehe Docstring classify_mask. Nur zu "
+                              "Testzwecken auf einem Datensatz ohne weiche Mosaikkanten (Feathering) setzen.")
+    parser.add_argument("--enable-fill-ratio-check", action="store_true",
+                         help="Stufe E (Bounding-Box-Fuellgrad) aktivieren - wirkt nur zusammen mit "
+                              "--enable-gradient-check, standardmaessig AUS (siehe Docstring classify_mask).")
     parser.add_argument("--increment", type=int, default=7,
                          help="Wert, um den falsche NoData-Pixel vom NoData-Zielwert weg verschoben werden (Default: 7)")
     parser.add_argument("--nodata-value", type=int, choices=[0, 255], default=0,
@@ -755,6 +788,8 @@ def main():
                 gradient_tolerance=args.gradient_tolerance,
                 gradient_ring_fraction=args.gradient_ring_fraction,
                 min_fill_ratio=args.min_fill_ratio,
+                enable_gradient_check=args.enable_gradient_check,
+                enable_fill_ratio_check=args.enable_fill_ratio_check,
             )
             if args.in_place:
                 result = process_tile_inplace(src_path, backup_dir=args.backup_dir, **common_kwargs)
