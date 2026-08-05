@@ -18,6 +18,7 @@ SCRIPT_21   = os.path.join(SCRIPT_DIR, "2_1_SB_DOP_16_FOLDERorganize_by_lineID.p
 SCRIPT_22   = os.path.join(SCRIPT_DIR, "2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py")
 SCRIPT_3    = os.path.join(SCRIPT_DIR, "3_fix_false_nodata_dop.py")
 RUNNER_SCRIPT = os.path.join(SCRIPT_DIR, "_osgeo_runner.py")
+SCRIPT_PREVIEW = os.path.join(SCRIPT_DIR, "_tif_preview_reader.py")
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "_gdwh_config.json")
 
 # ─── Auswahllisten ────────────────────────────────────────────────────────────
@@ -520,7 +521,7 @@ class SicherheitsCheckDialog(tk.Toplevel):
             nodata = "keine NoData nötig"
         else:
             nodata = meta.get("NoData", "")
-        _kv(sec1, "NoData der Quelldaten:", nodata)
+        _kv(sec1, "Input NoData", nodata)
         if gds == "SB_DOP":
             _kv(sec1, "Falsche NoData-Pixel vorkorrigieren:",
                 "Ja" if meta.get("FixFalseNodata") else "Nein")
@@ -794,6 +795,79 @@ class ImportDoneDialog(tk.Toplevel):
         self.wait_window()
 
 
+class NoDataPreviewWindow(tk.Toplevel):
+    """Popup-Viewer für die "check input-NoData"-Tiff-Vorschau (PPM-Datei).
+
+    Rein visuelle Kontrolle der Rand-NoData-Pixel (schwarz/weiss), nicht
+    georeferenziert. Zoom (Mausrad, Stufen) und Pan (Ziehen) über die
+    Standard-Fähigkeiten von tk.Canvas / tk.PhotoImage - bewusst ohne Pillow,
+    damit keine zusätzliche Abhängigkeit im restriktiven Firmenumfeld nötig ist.
+    """
+
+    _ZOOM_STEPS = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+
+    def __init__(self, master, ppm_path, filename=""):
+        super().__init__(master)
+        self.title(f"check input-NoData – {filename}")
+        self.geometry("900x700")
+
+        self._base_img = tk.PhotoImage(file=ppm_path)
+        try:
+            os.remove(ppm_path)  # temporäre Vorschaudatei nicht mehr benötigt
+        except Exception:
+            pass
+
+        self._zoom_idx = self._ZOOM_STEPS.index(1.0)
+        self._display_img = None
+
+        toolbar = ttk.Frame(self, padding=4)
+        toolbar.pack(fill="x")
+        ttk.Button(toolbar, text="–", width=3, command=lambda: self._zoom(-1)).pack(side="left")
+        ttk.Button(toolbar, text="+", width=3, command=lambda: self._zoom(1)).pack(side="left", padx=(4, 0))
+        ttk.Button(toolbar, text="100%", command=self._zoom_reset).pack(side="left", padx=(8, 0))
+        ttk.Label(toolbar, text="Mausrad = Zoom, Ziehen (linke Maustaste) = Pan",
+                  font=("", 8)).pack(side="left", padx=(12, 0))
+
+        self.canvas = tk.Canvas(self, background="#303030", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+
+        self.canvas.bind("<ButtonPress-1>", lambda e: self.canvas.scan_mark(e.x, e.y))
+        self.canvas.bind("<B1-Motion>", lambda e: self.canvas.scan_dragto(e.x, e.y, gain=1))
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)    # Windows
+        self.canvas.bind("<Button-4>", lambda _e: self._zoom(1))  # Linux (Vollständigkeit)
+        self.canvas.bind("<Button-5>", lambda _e: self._zoom(-1))
+
+        self._render()
+
+    def _scaled_image(self):
+        factor = self._ZOOM_STEPS[self._zoom_idx]
+        if factor == 1.0:
+            return self._base_img
+        if factor > 1.0:
+            return self._base_img.zoom(int(factor))
+        return self._base_img.subsample(int(round(1 / factor)))
+
+    def _render(self):
+        img = self._scaled_image()
+        self._display_img = img  # Referenz halten, sonst Garbage Collection durch Tk
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=img)
+        self.canvas.config(scrollregion=(0, 0, img.width(), img.height()))
+
+    def _zoom(self, direction):
+        new_idx = self._zoom_idx + direction
+        if 0 <= new_idx < len(self._ZOOM_STEPS):
+            self._zoom_idx = new_idx
+            self._render()
+
+    def _zoom_reset(self):
+        self._zoom_idx = self._ZOOM_STEPS.index(1.0)
+        self._render()
+
+    def _on_mousewheel(self, event):
+        self._zoom(1 if event.delta > 0 else -1)
+
+
 # ─── Haupt-App ────────────────────────────────────────────────────────────────
 class GDWHApp(tk.Tk):
 
@@ -974,7 +1048,7 @@ class GDWHApp(tk.Tk):
         r += 2
 
         # NoData
-        self.nodata_lbl  = ttk.Label(sec, text="NoData der Quelldaten:", font=("Segoe UI", 9, "bold"))
+        self.nodata_lbl  = ttk.Label(sec, text="Input NoData:", font=("Segoe UI", 9, "bold"))
         self.nodata_lbl.grid(row=r, column=0, sticky="w", pady=3)
         self.nodata_var  = tk.StringVar()
         self.nodata_cb   = ttk.Combobox(sec, textvariable=self.nodata_var,
@@ -983,6 +1057,16 @@ class GDWHApp(tk.Tk):
         self.nodata_auto = ttk.Label(sec, font=("", 8), justify="left")
         self.nodata_auto.grid(row=r+1, column=1, sticky="w", padx=(8, 0))
         self._dim_labels.append(self.nodata_auto)
+
+        # check input-NoData – öffnet das erste Tiff im Quellordner als
+        # herunterskalierte Vorschau (Popup, Zoom/Pan), damit die Rand-
+        # NoData-Pixel der Quelldaten visuell auf schwarz/weiss geprüft werden
+        # können. Nur für SB_DOP / SB_DOP_16 relevant (bei SB_DSM* sind die
+        # Meta-Daten fix, siehe _on_gds_change).
+        self.check_nodata_btn = ttk.Button(
+            sec, text="check input-NoData",
+            command=self._open_nodata_check_viewer)
+        self.check_nodata_btn.grid(row=r, column=2, sticky="w", padx=(16, 0), pady=3)
 
         # Falsche NoData-Pixel vorkorrigieren – nur relevant für GDS "SB_DOP":
         # korrigiert einzelne/kleine 0,0,0- bzw. 255,255,255-Pixelgruppen
@@ -994,7 +1078,7 @@ class GDWHApp(tk.Tk):
         self.fix_nodata_cb = ttk.Checkbutton(
             sec, variable=self.fix_nodata_var,
             text="Falsche NoData-Pixel in Nutzdaten vorkorrigieren")
-        self.fix_nodata_cb.grid(row=r, column=2, sticky="w", padx=(16, 0), pady=3)
+        self.fix_nodata_cb.grid(row=r + 1, column=2, sticky="w", padx=(16, 0), pady=3)
         r += 2
 
         # TerrainModel
@@ -1336,6 +1420,7 @@ class GDWHApp(tk.Tk):
         if gds == "SB_DSM":
             self.nodata_lbl.grid_remove()
             self.nodata_cb.grid_remove()
+            self.check_nodata_btn.grid_remove()
             self.fix_nodata_cb.grid_remove()
             self.nodata_auto.config(
                 text="NoData wird automatisch gesetzt:\n"
@@ -1345,6 +1430,7 @@ class GDWHApp(tk.Tk):
         elif gds == "SB_DSM_PUNKTWOLKE":
             self.nodata_lbl.grid_remove()
             self.nodata_cb.grid_remove()
+            self.check_nodata_btn.grid_remove()
             self.fix_nodata_cb.grid_remove()
             self.nodata_auto.config(text="NoData: keine NoData nötig (Punktwolken / LAZ)")
             self.nodata_auto.grid()
@@ -1356,6 +1442,9 @@ class GDWHApp(tk.Tk):
             if self.nodata_var.get() not in opts:
                 self.nodata_var.set(opts[0])
             self.nodata_cb.grid()
+            # Sichtbarkeit von "check input-NoData": für SB_DOP / SB_DOP_16
+            # (hier landet man ohnehin nur im else-Zweig).
+            self.check_nodata_btn.grid()
             # Vorkorrektur falsche NoData-Pixel: nur für SB_DOP (Mosaik, 8BIT
             # RGB) sinnvoll, nicht für SB_DOP_16 (Einzellinien, eigene Radiometrie).
             if gds == "SB_DOP":
@@ -1499,6 +1588,96 @@ class GDWHApp(tk.Tk):
             return
 
         self._set_check_btn_state(btn, "ok")
+
+    # ── check input-NoData (Tiff-Vorschau, Rand-Pixel schwarz/weiss) ─────────────
+    @staticmethod
+    def _find_first_tif(src_folder):
+        """Erste .tif/.tiff-Datei im Quellordner (inkl. 1 Unterebene, analog zu
+        _extract_area_from_source). Gibt den vollen Pfad zurück oder None."""
+        extensions = ('.tif', '.tiff')
+        if not os.path.isdir(src_folder):
+            return None
+        try:
+            for fn in sorted(os.listdir(src_folder)):
+                if fn.lower().endswith(extensions):
+                    return os.path.join(src_folder, fn)
+            for sub in sorted(os.listdir(src_folder)):
+                sub_path = os.path.join(src_folder, sub)
+                if os.path.isdir(sub_path):
+                    for fn in sorted(os.listdir(sub_path)):
+                        if fn.lower().endswith(extensions):
+                            return os.path.join(sub_path, fn)
+        except Exception:
+            pass
+        return None
+
+    def _open_nodata_check_viewer(self):
+        """Öffnet das erste Tiff im aktuellen Quellordner als herunterskalierte
+        Vorschau in einem Popup (Zoom/Pan), zur rein visuellen Kontrolle der
+        Rand-NoData-Pixel. Die Vorschau wird via OSGeo4W-Python-Subprocess
+        erzeugt (Haupt-GUI läuft ohne GDAL-Bindings, siehe _exec_with_osgeo)."""
+        gds = self.gds_var.get()
+        src = (self.if_var.get() if gds == "SB_DOP_16" else self.quelle_var.get()).strip().strip('"')
+
+        if not os.path.isdir(src):
+            messagebox.showerror("check input-NoData",
+                f"Quellordner nicht gefunden:\n  {src}", parent=self)
+            return
+        tif_path = self._find_first_tif(src)
+        if not tif_path:
+            messagebox.showerror("check input-NoData",
+                "Kein Tiff (.tif/.tiff) im Quellordner gefunden.", parent=self)
+            return
+        if not self._osgeo_python or not os.path.isfile(self._osgeo_python):
+            messagebox.showerror("check input-NoData",
+                "OSGeo4W Python nicht gefunden.\n"
+                "Bitte Pfad via 'Ändern…' festlegen  (z.B. C:\\OSGeo4W\\bin\\python3.exe).",
+                parent=self)
+            return
+
+        self.check_nodata_btn.config(state="disabled", text="lädt…")
+        threading.Thread(
+            target=self._generate_nodata_preview,
+            args=(tif_path,),
+            daemon=True
+        ).start()
+
+    def _generate_nodata_preview(self, tif_path):
+        """Läuft im Hintergrund-Thread: erzeugt via Subprocess eine PPM-Vorschau
+        des Tiffs (dezimiert, 8BIT RGB), die das Haupt-GUI ohne Pillow anzeigen
+        kann (tk.PhotoImage kennt PPM nativ)."""
+        ppm_path = os.path.join(
+            tempfile.gettempdir(), f"gdwh_nodata_preview_{os.getpid()}.ppm")
+        env = os.environ.copy()
+        env["PYTHONHOME"] = _detect_python_home(self._osgeo_python)
+        env["PYTHONNOUSERSITE"] = "1"  # siehe _exec_with_osgeo (ABI-Konflikt-Schutz)
+
+        try:
+            proc = subprocess.run(
+                [self._osgeo_python, SCRIPT_PREVIEW, tif_path, ppm_path, "1600"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                universal_newlines=True, encoding="utf-8", errors="replace",
+                env=env, timeout=60,
+            )
+            if proc.returncode != 0 or not os.path.isfile(ppm_path):
+                raise RuntimeError(proc.stdout.strip() or "Vorschau-Skript fehlgeschlagen.")
+        except Exception as e:
+            self.after(0, lambda: self._on_preview_error(e))
+            return
+        self.after(0, lambda: self._on_preview_ready(ppm_path, os.path.basename(tif_path)))
+
+    def _on_preview_ready(self, ppm_path, filename):
+        self.check_nodata_btn.config(state="normal", text="check input-NoData")
+        try:
+            NoDataPreviewWindow(self, ppm_path, filename)
+        except Exception as e:
+            messagebox.showerror("check input-NoData",
+                f"Vorschau konnte nicht angezeigt werden:\n  {e}", parent=self)
+
+    def _on_preview_error(self, error):
+        self.check_nodata_btn.config(state="normal", text="check input-NoData")
+        messagebox.showerror("check input-NoData",
+            f"Vorschau konnte nicht erzeugt werden:\n  {error}", parent=self)
 
     # ── Ordner-Dialog ─────────────────────────────────────────────────────────
     def _browse(self, var, must_exist=True):
