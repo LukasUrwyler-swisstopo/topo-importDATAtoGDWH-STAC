@@ -13,7 +13,8 @@ python 0_main_GDWH_import_GUI.py
 ```
 open CMD-Terminal> *python "...\0_main_GDWH_import_GUI.py"*
 
-<img width="1276" height="1519" alt="grafik" src="https://github.com/user-attachments/assets/c7212c9c-3f47-4227-9646-ab0120e3b903" />
+<img width="452" height="617" alt="image" src="https://github.com/user-attachments/assets/1153f60c-7824-451e-a4dd-6f8c2e023e9b" />
+
 
 GUI – alle Felder werden interaktiv ausgefüllt, kein manuelles Script-Editieren nötig.
 
