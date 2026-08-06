@@ -88,9 +88,12 @@ Hauptscript starten  (GUI)
         │   AUSNAHME 2: SB_DOP mit aktivierter Vorkorrektur – die Maske wurde
         │   bereits von Script 3 gesetzt und wird hier übersprungen; der
         │   NoData-Tag wird trotzdem wie gehabt gesetzt.
+        │   AUSNAHME 3: SB_DOP mit NoData 0,0,0 und Checkbox NICHT aktiviert –
+        │   hat die Datei bereits eine interne Maske (z.B. fortgesetzter
+        │   Lauf), wird die Neuberechnung pro Datei übersprungen, siehe unten.
         │   Bei NoData 255,255,255 (und Checkbox NICHT aktiviert): echte
         │   NoData-Pixel werden hier ebenfalls zusaetzlich auf 0,0,0
-        │   normalisiert, siehe unten.)
+        │   normalisiert, siehe unten – hier IMMER neu berechnet, kein Skip.)
         ├─ Daten ins Bucket kopieren  (NV-Ordner; PUNKTWOLKE: +PrecalculatedFormats)
         └─ files.csv erstellen  (MD5-Hash, TileKey, WKT-Footprint)
                 │
@@ -224,13 +227,19 @@ Wählt man im GUI-Dropdown `NoData der Quelldaten` = `255 255 255` (GDS `SB_DOP`
 
 Damit sind Pixelwerte, Flag Mask und NoData-Tag/XML (dieser ist bei SB_DOP bereits immer auf `0` normalisiert, siehe oben) durchgehend konsistent, unabhängig vom historischen NoData-Wert der Quelldaten. Bei NoData-Wahl `0 0 0` ändert sich nichts (Umschreiben auf denselben Wert wäre wirkungslos).
 
+### Skip bei bereits vorhandener Flag Mask (nur NoData 0,0,0, Checkbox aus)
+
+Bei GDS `SB_DOP` und NoData-Wahl `0 0 0` ist `tag_mask_on_raster()` ohne den Pixel-Rewrite von oben eine reine, seiteneffektfreie Funktion der Pixelwerte. Hat eine Datei bereits eine interne Maske (`GDAL_TIFF_INTERNAL_MASK`) – z.B. bei einem fortgesetzten Lauf auf teilweise bereits verarbeiteten Dateien –, liefert eine Neuberechnung exakt dasselbe Ergebnis. Script 1 prüft das deshalb pro Datei (`_raster_has_internal_mask()`, `GetMaskFlags() & GMF_PER_DATASET`) und überspringt die Berechnung, falls die Maske schon vorhanden ist.
+
+Bei NoData `255 255 255` gilt dieser Skip bewusst **nicht** – dort ist die Maskenberechnung mit dem Pixel-Rewrite (siehe oben) gekoppelt, ein reiner "Maske vorhanden?"-Check könnte einen noch nötigen Rewrite stillschweigend übergehen. Dort wird die Maske deshalb bei deaktivierter Checkbox immer neu berechnet.
+
 Aktiviert man im GUI die Checkbox neben `NoData` (nur bei GDS `SB_DOP`, standardmässig **aktiviert**), läuft dieser Ablauf automatisch **vor** Script 1, in-place auf den Quelldateien:
 
 1. **Alte Flag Mask/NoData-Tag entfernen** (`strip_existing_mask`) – falls eine Datei bereits eine (falsch berechnete) Maske trägt, z.B. aus einem früheren Lauf.
 2. **Pixel korrigieren** wie oben beschrieben.
 3. **Flag Mask direkt mitschreiben** (`write_mask`) – die Maske ist rechnerisch äquivalent zu einer Neuberechnung auf der bereits korrigierten Datei (echtes NoData = Pixel, die nach der Korrektur weiterhin dem NoData-Wert entsprechen), wird aber im selben Schreibvorgang gesetzt statt in Script 1 per zusätzlichem vollständigem Lese-/Schreibdurchgang neu berechnet – spart einen kompletten I/O-Durchgang pro Tile. Der NoData-GDAL-Tag wird bewusst **nicht** hier gesetzt, sondern bleibt wie gehabt Aufgabe von Script 1 (dort erfolgt die GDS-spezifische Normalisierung auf `"0 0 0"`, siehe `normalize_nodata_for_output` oben).
 
-Script 1 erkennt über `meta["FixFalseNodata"]`, dass die Maske bereits gesetzt ist, und überspringt `tag_mask_on_raster()` für diese Dateien (der NoData-Tag wird trotzdem normal gesetzt). Bei deaktivierter Checkbox oder für alle anderen GDS ändert sich nichts am bisherigen Ablauf.
+Script 1 erkennt über `meta["FixFalseNodata"]`, dass die Maske bereits gesetzt ist, und überspringt `tag_mask_on_raster()` für diese Dateien (der NoData-Tag wird trotzdem normal gesetzt). Bei deaktivierter Checkbox und NoData `0 0 0` überspringt Script 1 die Maskenberechnung stattdessen pro Datei, falls bereits eine Maske vorhanden ist (siehe oben). Bei deaktivierter Checkbox und NoData `255 255 255`, oder für alle anderen GDS, ändert sich nichts am bisherigen Ablauf.
 
 `3_fix_false_nodata_dop.py` ist auch eigenständig per CLI nutzbar (einzelnes Tile, ganzer Ordner, mit/ohne `--in-place`, optionaler CSV-Report aller klassifizierten Gruppen für Diagnose via `--report`) – siehe Docstring im Skript.
 

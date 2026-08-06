@@ -397,6 +397,33 @@ def _compute_nodata_mask(ds, nodata_str, rewrite_real_nodata_to_zero=False):
     return full_mask
 
 
+def _raster_has_internal_mask(file_path):
+    """
+    Prueft, ob file_path bereits eine interne per-Dataset Flag Mask
+    (GDAL_TIFF_INTERNAL_MASK, siehe tag_mask_on_raster) besitzt.
+
+    Nur fuer den Fall SB_DOP + NoData 0,0,0 (schwarz) ohne FixFalseNodata
+    relevant: dort hat tag_mask_on_raster keinen Pixel-Rewrite als
+    Nebenwirkung (dieser existiert nur bei NoData 255,255,255, siehe
+    rewrite_real_nodata_to_zero), die Maskenberechnung ist also eine reine,
+    seiteneffektfreie Funktion der Pixelwerte. Ist bei unveraenderten Pixeln
+    bereits eine Maske vorhanden (z.B. fortgesetzter Lauf auf teilweise
+    bereits verarbeiteten Dateien), liefert eine Neuberechnung exakt
+    dasselbe Ergebnis - kann also gefahrlos uebersprungen werden.
+    """
+    try:
+        ds = gdal.Open(file_path, gdal.GA_ReadOnly)
+    except Exception:
+        return False
+    if ds is None:
+        return False
+    try:
+        flags = ds.GetRasterBand(1).GetMaskFlags()
+        return bool(flags & gdal.GMF_PER_DATASET)
+    finally:
+        ds = None
+
+
 def tag_mask_on_raster(file_path, nodata_str, rewrite_real_nodata_to_zero=False):
     """
     Erzeugt zusaetzlich zum NoData-Tag eine interne per-Dataset-Maske
@@ -1033,7 +1060,18 @@ def files_in_order(src, out, GDS, meta):
                         # (siehe README "Historische 255er-NoData-DOPs").
                         rewrite_to_zero = (GDS == "SB_DOP"
                                            and all(float(v) == 255 for v in nodata_str.split()))
-                        tag_mask_on_raster(fp, nodata_str, rewrite_real_nodata_to_zero=rewrite_to_zero)
+                        # SB_DOP mit NoData 0,0,0 (kein Pixel-Rewrite, siehe
+                        # rewrite_to_zero oben): Maskenberechnung ist hier
+                        # seiteneffektfrei, deshalb Skip erlaubt, falls die
+                        # Datei bereits eine Maske hat (z.B. fortgesetzter
+                        # Lauf). Bei 255,255,255 bewusst NICHT skippen - dort
+                        # ist die Maskenberechnung mit dem Pixel-Rewrite
+                        # gekoppelt (siehe _raster_has_internal_mask).
+                        skip_if_present = GDS == "SB_DOP" and not rewrite_to_zero
+                        if skip_if_present and _raster_has_internal_mask(fp):
+                            log(f"  Flag Mask bereits vorhanden, Berechnung uebersprungen: {fn}")
+                        else:
+                            tag_mask_on_raster(fp, nodata_str, rewrite_real_nodata_to_zero=rewrite_to_zero)
             update_file_csv(out, fp, GDS)
         except Exception as e:
             # OPT: Vollständiger Traceback im Log für einfacheres Debugging
