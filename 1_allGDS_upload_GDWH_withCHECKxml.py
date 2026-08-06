@@ -2,9 +2,13 @@ print("\nVersion 2.4.2 (Bugfixes: WKT-Polygon, CSV-Leerzeile, GDAL-Handles, src-
 
 import os
 import re
+import json
 import hashlib
 import shutil
 import time
+import random
+import subprocess
+import tempfile
 import traceback
 import numpy as np
 from osgeo import gdal
@@ -451,6 +455,243 @@ def tag_mask_on_raster(file_path, nodata_str, rewrite_real_nodata_to_zero=False)
         ds = None
 
 
+# ****************************** CRS-Tagging LAZ (SB_DSM_PUNKTWOLKE) ******************************
+# Hintergrund: Die LAZ-Quelltiles fuer SB_DSM_PUNKTWOLKE (1km2-Kacheln, kein
+# COPC, z.B. aus lasclip/LAStools) haben aktuell KEIN CRS im Header gesetzt
+# (spatialreference/wkt/proj4 leer - bestaetigt via 'pdal info --metadata').
+# Die Koordinatenwerte selbst sind bereits korrekt in LV95/LN02, es fehlt nur
+# die Metadaten-Angabe im Header. Deshalb wird hier AUSSCHLIESSLICH ein
+# CRS-Tag gesetzt (PDAL readers.las 'override_srs'), NICHT reprojiziert -
+# das waere filters.reprojection und wuerde die Koordinatenwerte veraendern.
+LAZ_TARGET_SRS = "EPSG:2056+5728"  # Compound: Horizontal LV95 + Vertikal LN02
+
+# Grobe Bounding Box CH1903+/LV95 (E/N, mit Toleranz) - dient NUR als
+# Plausibilitaets-Warnung, kein Hard-Fail. Schuetzt gegen den Fall, dass eine
+# Datei ohne CRS im Header in Wirklichkeit gar nicht in LV95/LN02 vorliegt.
+# Dateinamen enthalten zwar oft "LV95_LN02" als Hinweis - das wird hier
+# bewusst NICHT geprueft (Dateiname kann falsch/veraltet sein); die
+# tatsaechlichen Koordinatenwerte sind die verlaesslichere Quelle.
+LV95_BBOX = {"minx": 2_460_000, "maxx": 2_870_000, "miny": 1_045_000, "maxy": 1_310_000}
+
+
+def _find_pdal_exe():
+    """
+    Ermittelt den Pfad zur pdal.exe. Bevorzugt PATH (bei OSGeo4W i.d.R.
+    vorhanden); Fallback: gleicher bin-Ordner wie der aktuell laufende
+    (OSGeo4W-)Python-Interpreter, da PDAL dort i.d.R. mitinstalliert ist.
+    """
+    exe = shutil.which("pdal")
+    if exe:
+        return exe
+    candidate = os.path.join(os.path.dirname(sys.executable), "pdal.exe")
+    if os.path.isfile(candidate):
+        return candidate
+    return "pdal"  # laesst subprocess einen klaren FileNotFoundError werfen
+
+
+def _pdal_metadata(file_path):
+    """
+    Ruft 'pdal info --metadata' fuer eine LAZ/LAS-Datei auf und gibt das
+    geparste JSON-Dict zurueck. Wirft eine Exception bei Fehlern (Datei
+    nicht lesbar, pdal nicht gefunden, ungueltige/leere Ausgabe) - der
+    Aufrufer entscheidet, wie damit umgegangen wird.
+    """
+    result = subprocess.run(
+        [_find_pdal_exe(), "info", "--metadata", file_path],
+        capture_output=True, text=True, check=True
+    )
+    return json.loads(result.stdout)
+
+
+def _laz_srs_is_set(metadata):
+    """
+    Prueft anhand des 'pdal info --metadata'-JSON, ob bereits ein CRS
+    gesetzt ist. PDAL liefert dazu zwei Stellen (beide werden geprueft,
+    leere Strings zaehlen als 'nicht gesetzt'):
+      - metadata['metadata']['spatialreference'] / 'comp_spatialreference'
+        (Top-Level-Felder, direkt aus dem LAS-Header)
+      - metadata['metadata']['srs']['wkt'|'compoundwkt'|'proj4']
+        (aufbereitete SRS-Struktur)
+    """
+    md = metadata.get("metadata") or {}
+    srs = md.get("srs") or {}
+    if any((md.get(key) or "").strip() for key in ("spatialreference", "comp_spatialreference")):
+        return True
+    return any((srs.get(key) or "").strip() for key in ("wkt", "compoundwkt", "proj4"))
+
+
+def _warn_if_outside_lv95(file_path, metadata):
+    """
+    Plausibilitaets-Warnung (kein Abbruch): vergleicht die Bounding Box aus
+    den PDAL-Metadaten grob gegen die Schweizer LV95-Ausdehnung. Fehlt die
+    Bounding Box in den Metadaten, wird nichts geprueft.
+    """
+    md = metadata.get("metadata") or {}
+    try:
+        minx, maxx = float(md["minx"]), float(md["maxx"])
+        miny, maxy = float(md["miny"]), float(md["maxy"])
+    except (KeyError, TypeError, ValueError):
+        return
+    if not (LV95_BBOX["minx"] <= minx <= maxx <= LV95_BBOX["maxx"]
+            and LV95_BBOX["miny"] <= miny <= maxy <= LV95_BBOX["maxy"]):
+        log(f"[WARNUNG] '{os.path.basename(file_path)}': Koordinaten "
+            f"(X {minx:.0f}-{maxx:.0f}, Y {miny:.0f}-{maxy:.0f}) liegen ausserhalb "
+            f"der erwarteten LV95-Bounding-Box. CRS-Tag wird trotzdem gesetzt "
+            f"({LAZ_TARGET_SRS}) - bitte Datei manuell pruefen!")
+
+
+def tag_crs_on_laz(file_path, override_srs=LAZ_TARGET_SRS):
+    """
+    Setzt per PDAL (readers.las 'override_srs') ein CRS-Tag auf eine LAZ-
+    Datei, OHNE die Koordinaten zu veraendern. Ablauf:
+
+      1. 'pdal info --metadata' auf der Originaldatei: ist bereits ein CRS
+         gesetzt? Falls ja -> NICHT ueberschreiben, nur loggen und
+         ueberspringen (Sicherheitsnetz gegen versehentliches Ueberschreiben
+         eines bereits korrekten, aber ggf. abweichenden CRS).
+      2. Falls kein CRS gesetzt: grobe Plausibilitaets-Warnung gegen die
+         LV95-Bounding-Box (siehe _warn_if_outside_lv95), dann PDAL-Pipeline:
+         schreibt eine neue Datei in ein temporaeres File im selben Ordner
+         (readers.las mit override_srs, writers.las mit forward='all' -
+         erhaelt Scale/Offset/Point-Format/VLRs des Originals unveraendert).
+         Erst bei Erfolg wird das Original atomar (os.replace) durch die
+         neue Datei ersetzt.
+
+    Gibt einen String zurueck: "tagged" | "skipped" | "failed".
+    """
+    name = os.path.basename(file_path)
+
+    try:
+        metadata = _pdal_metadata(file_path)
+    except Exception as e:
+        log(f"[FEHLER] CRS-Check fehlgeschlagen fuer '{name}': {e}")
+        return "failed"
+
+    if _laz_srs_is_set(metadata):
+        log(f"[CRS] '{name}': hat bereits ein CRS im Header - NICHT ueberschrieben, uebersprungen.")
+        return "skipped"
+
+    _warn_if_outside_lv95(file_path, metadata)
+
+    tmp_path = None
+    pipeline_path = None
+    try:
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".laz", dir=os.path.dirname(file_path))
+        os.close(tmp_fd)
+
+        pipeline = {
+            "pipeline": [
+                {"type": "readers.las", "filename": file_path, "override_srs": override_srs},
+                {"type": "writers.las", "filename": tmp_path, "compression": "laszip", "forward": "all"},
+            ]
+        }
+        pipeline_fd, pipeline_path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(pipeline_fd, "w", encoding="utf-8") as f:
+            json.dump(pipeline, f)
+
+        subprocess.run([_find_pdal_exe(), "pipeline", pipeline_path],
+                        capture_output=True, text=True, check=True)
+
+        if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
+            raise RuntimeError("PDAL hat keine gueltige Ausgabedatei erzeugt.")
+
+        os.replace(tmp_path, file_path)
+        tmp_path = None  # erfolgreich verschoben - nicht mehr aufraeumen
+        log(f"[CRS] '{name}': CRS getaggt ({override_srs}).")
+        return "tagged"
+
+    except subprocess.CalledProcessError as e:
+        log(f"[FEHLER] PDAL-Pipeline fehlgeschlagen fuer '{name}': {(e.stderr or '').strip()}")
+        return "failed"
+    except Exception as e:
+        log(f"[FEHLER] CRS-Tagging fehlgeschlagen fuer '{name}': {e}")
+        return "failed"
+    finally:
+        if tmp_path and os.path.isfile(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        if pipeline_path and os.path.isfile(pipeline_path):
+            try:
+                os.remove(pipeline_path)
+            except Exception:
+                pass
+
+
+def tag_crs_on_laz_folder(src, override_srs=LAZ_TARGET_SRS):
+    """
+    Batch-CRS-Zuweisung fuer alle .laz-Dateien in `src` (GDS
+    SB_DSM_PUNKTWOLKE) - siehe tag_crs_on_laz() fuer die Logik pro Datei.
+    Eine einzelne fehlgeschlagene Datei bricht die Schleife NICHT ab - der
+    Fehler wird geloggt, die restlichen Dateien werden trotzdem verarbeitet.
+
+    Nach dem Batch wird bei EINER zufaellig gewaehlten, neu getaggten Datei
+    per 'pdal info --metadata' verifiziert, dass das CRS tatsaechlich im
+    Header angekommen ist (Stichprobe statt Vollpruefung - alle Dateien
+    durchlaufen dieselbe Pipeline mit denselben PDAL-Optionen, daher ist ein
+    zusaetzlicher voller Lesevorgang je Datei nicht noetig).
+
+    Gibt ein Zusammenfassungs-Dict zurueck: {"total", "tagged", "skipped", "failed"}.
+    """
+    laz_files = sorted(
+        fn for fn in os.listdir(src)
+        if os.path.isfile(os.path.join(src, fn)) and fn.lower().endswith(".laz")
+    )
+
+    summary = {"total": len(laz_files), "tagged": 0, "skipped": 0, "failed": 0}
+    failed_files = []
+    tagged_paths = []
+
+    log(f"\n=== CRS-Zuweisung LAZ (SB_DSM_PUNKTWOLKE): {len(laz_files)} Datei(en) ===")
+    log(f"Ziel-CRS: {override_srs}  (Horizontal EPSG:2056 CH1903+/LV95, Vertikal EPSG:5728 LN02)")
+    log("Es wird NUR ein CRS-Tag gesetzt, KEINE Reprojektion (Koordinaten bleiben unveraendert).\n")
+
+    for i, fn in enumerate(laz_files, 1):
+        fp = os.path.join(src, fn)
+        log(f"[{i}/{len(laz_files)}] {fn}")
+        result = tag_crs_on_laz(fp, override_srs=override_srs)
+        if result == "tagged":
+            summary["tagged"] += 1
+            tagged_paths.append(fp)
+        elif result == "skipped":
+            summary["skipped"] += 1
+        else:
+            summary["failed"] += 1
+            failed_files.append(fn)
+
+    if tagged_paths:
+        sample = random.choice(tagged_paths)
+        try:
+            verified = _laz_srs_is_set(_pdal_metadata(sample))
+        except Exception as e:
+            verified = False
+            log(f"\n[VERIFIKATION FEHLGESCHLAGEN] Stichprobe '{os.path.basename(sample)}' "
+                f"konnte nicht erneut gelesen werden: {e}")
+        else:
+            if verified:
+                log(f"\n[VERIFIKATION OK] Stichprobe '{os.path.basename(sample)}': CRS im Header bestaetigt.")
+            else:
+                log(f"\n[VERIFIKATION FEHLGESCHLAGEN] Stichprobe '{os.path.basename(sample)}': "
+                    f"CRS nach dem Taggen NICHT im Header gefunden!")
+        if not verified:
+            summary["failed"] += 1
+            failed_files.append(f"(Verifikation) {os.path.basename(sample)}")
+    elif summary["total"] > 0:
+        log("\n[HINWEIS] Keine Datei wurde neu getaggt - Verifikation uebersprungen.")
+
+    log(f"\n=== CRS-Zuweisung abgeschlossen: total={summary['total']}, "
+        f"getaggt={summary['tagged']}, uebersprungen={summary['skipped']}, "
+        f"fehlgeschlagen={summary['failed']} ===\n")
+
+    if failed_files:
+        log("Fehlgeschlagene/nicht verifizierte Dateien:")
+        for f in failed_files:
+            log("   - " + f)
+
+    return summary
+
+
 # ****************************** Sicherheits-Checker ******************************
 def preview_xml_attributes(src, GDS, meta_info):
     """
@@ -505,6 +746,8 @@ def preview_xml_attributes(src, GDS, meta_info):
         print(f"NoData: {get_nodata_value(example_file, GDS, meta_info)}")
     else:
         print("NoData: <LAZ hat kein noData-Value>")
+        print(f"CRS-Zuweisung: Tiles ohne CRS im Header werden vor der Verarbeitung mit "
+              f"{LAZ_TARGET_SRS} getaggt (nur Tag, keine Reprojektion - siehe Log).")
 
     line_ids = meta_info.get("Line_ID", [])
     print(",".join(line_ids))
@@ -729,6 +972,18 @@ def files_in_order(src, out, GDS, meta):
     # Altbestaende bereinigen (GDS-spezifische Whitelist),
     # bevor neue XML erzeugt werden.
     cleanup_input_folder(src, GDS)
+
+    # SB_DSM_PUNKTWOLKE: CRS-Tag auf allen LAZ-Quelltiles setzen, BEVOR XML
+    # erzeugt, Dateien nach GDWH kopiert oder files.csv geschrieben wird
+    # (siehe tag_crs_on_laz_folder - reine Tag-Zuweisung, keine Reprojektion).
+    # Bricht bewusst den ganzen Lauf ab, wenn auch nur eine Datei fehlschlaegt
+    # oder die Stichproben-Verifikation misslingt - eine ungetaggte/nicht
+    # verifizierte Punktwolke soll nicht unbemerkt nach GDWH gelangen.
+    if GDS == "SB_DSM_PUNKTWOLKE":
+        crs_summary = tag_crs_on_laz_folder(src)
+        if crs_summary["failed"] > 0:
+            log("Abbruch: CRS-Zuweisung fuer mindestens eine Datei fehlgeschlagen (siehe oben).")
+            sys.exit(1)
 
     # OPT: Dateien zuerst sammeln → ermöglicht Fortschrittsanzeige [i/n]
     files = [

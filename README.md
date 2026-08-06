@@ -68,6 +68,13 @@ Hauptscript starten  (GUI)
         │   0,0,0 normalisiert, siehe unten)
         │
         ├─ Quellordner bereinigen  (nur Nutzdaten behalten – Whitelist pro GDS)
+        ├─ [SB_DSM_PUNKTWOLKE only]  CRS-Tag auf allen .laz-Tiles setzen
+        │   (PDAL `readers.las` `override_srs` = `EPSG:2056+5728` – NUR Tag,
+        │   KEINE Reprojektion, Koordinaten bleiben unverändert. Tiles mit
+        │   bereits gesetztem CRS werden übersprungen, nicht überschrieben.
+        │   Stichproben-Verifikation per `pdal info --metadata`; schlägt
+        │   auch nur eine Datei fehl, bricht der Lauf ab – noch vor XML/
+        │   Kopieren, siehe unten)
         ├─ XML-Generierung  (pro .tif / .laz)
         ├─ NoData-Tag im TIFF setzen  (GDAL SetNoDataValue, pro Band)
         ├─ Interne Maske im TIFF setzen  (GDAL_TIFF_INTERNAL_MASK, 1-bit DEFLATE –
@@ -114,6 +121,7 @@ Hauptscript starten  (GUI)
   - Pfad kann über den Button **Ändern…** im GUI manuell gesetzt und wird in `_gdwh_config.json` gespeichert
   - GDAL-abhängige Sub-Scripts (1 und 2_2) werden intern als Subprocess im OSGeo4W Python ausgeführt
 - **tkinter** (in Python-Standardbibliothek enthalten)
+- **PDAL-CLI** (`pdal.exe`) im OSGeo4W-Environment – nur für `SB_DSM_PUNKTWOLKE` (CRS-Zuweisung auf LAZ-Tiles, siehe unten); wird über `PATH` oder denselben `bin`-Ordner wie der OSGeo4W-Python-Interpreter gesucht
 - Netzwerkzugriff auf GDWH-Bucket (`\\v0t0020a.adr.admin.ch\...\BUCKET_INT\...`)
 - **Korrektes Dateinamen-Format** (wird für XML-Generierung zwingend benötigt):
 
@@ -153,6 +161,8 @@ Alle Meta-Informationen werden **interaktiv** über das Haupt-Script eingegeben 
 > **SB_DSM:** NoData wird automatisch gesetzt (`"255"` für Hillshade [1-Band Grayscale], `"-3.4028235e+38"` für DSM-Raster).
 > 
 > **SB_DSM_PUNKTWOLKE:** kein NoData-Value.
+>
+> **SB_DSM_PUNKTWOLKE – CRS-Zuweisung (`tag_crs_on_laz_folder`):** Die LAZ-Quelltiles (1km²-Kacheln, kein COPC, i.d.R. aus `lasclip`/LAStools) haben aktuell kein CRS im Header (`spatialreference`/`wkt`/`proj4` leer). Die Koordinaten selbst sind bereits korrekt in LV95/LN02 – es fehlt nur die Metadaten-Angabe. Vor der XML-Generierung wird deshalb pro Tile per `pdal info --metadata` geprüft, ob bereits ein CRS gesetzt ist; falls ja, wird **nicht überschrieben**, sondern übersprungen und geloggt (Sicherheitsnetz gegen ein abweichendes, aber bereits korrektes CRS). Fehlt es, setzt eine PDAL-Pipeline (`readers.las` mit `override_srs="EPSG:2056+5728"`, `writers.las` mit `forward="all"`) **nur** das CRS-Tag – **keine Reprojektion**, Koordinatenwerte bleiben exakt erhalten (Schreiben in eine temporäre Datei, danach atomarer Ersatz des Originals). Zusätzlich eine grobe Plausibilitäts-Warnung (kein Abbruch) gegen die Schweizer LV95-Bounding-Box, falls eine Datei trotz fehlendem CRS klar ausserhalb liegt. Nach dem Batch wird eine zufällige neu getaggte Datei erneut per `pdal info --metadata` verifiziert. Schlägt eine einzelne Datei fehl oder die Stichprobe nicht, bricht der gesamte Lauf ab (`sys.exit(1)`), bevor XML/Kopieren/`files.csv` starten.
 >
 > **Warum zusätzlich eine interne Maske?** Die spätere COG-Ableitung im GDWH-Catalog nutzt JPEG-Kompression (verlustbehaftet). Der GDAL-COG-Treiber schreibt dabei bewusst **keinen** NoData-Wert, da ein exakter Pixelwert nach der Kompression nicht mehr garantiert ist. Eine interne per-Dataset-Maske (`GDAL_TIFF_INTERNAL_MASK`, 1-bit DEFLATE) bleibt dagegen verlustfrei erhalten und wird vom COG-Treiber auch bei JPEG korrekt übernommen – daher setzt `tag_mask_on_raster()` diese zusätzlich zum klassischen NoData-Tag.
 >
