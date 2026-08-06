@@ -2018,7 +2018,7 @@ class GDWHApp(tk.Tk):
 
     def _on_done(self, success):
         self._running = False
-        self.start_btn.config(state="normal")
+        self._update_start_btn_state()
         self._progress_bar.stop()
         self._progress_frame.pack_forget()
         if success:
@@ -2228,7 +2228,8 @@ class GDWHApp(tk.Tk):
             return
 
         self._running = True
-        self.start_btn.config(state="disabled")
+        T = DARK if self._dark else LIGHT
+        self.start_btn.config(state="disabled", fg=T["fg_dim"], disabledforeground=T["fg_dim"])
         self._progress_frame.pack(fill="x", padx=12, pady=(0, 4), before=self._btn_row)
         self._progress_bar.start(10)
         self._clear_log()
