@@ -858,6 +858,103 @@ class ImportDoneDialog(tk.Toplevel):
         self.wait_window()
 
 
+class PunktwolkeAttributeHinweisDialog(tk.Toplevel):
+    """Hinweis-Dialog vor dem Oeffnen des GDWH-Catalog-Portals fuer SB_DSM_PUNKTWOLKE:
+    beim Erstellen des Datenpakets duerfen im Portal nur bestimmte Attribute gesetzt
+    werden, der Rest muss leer bleiben."""
+
+    def __init__(self, parent, url, env_label, dark=True):
+        super().__init__(parent)
+        self._dark = dark
+        self._url = url
+        T = DARK if dark else LIGHT
+
+        self.title("Hinweis: Attribute Datenpaket (Punktwolke)")
+        self.resizable(False, False)
+        self.configure(bg=T["root"])
+        self.grab_set()
+        self.focus_set()
+
+        hdr = tk.Frame(self, bg=T["hdr_bg"])
+        hdr.pack(side="top", fill="x")
+        tk.Label(hdr, text="  ⚠  Attribute beim Erstellen des Datenpakets",
+                 font=("Segoe UI", 11, "bold"),
+                 bg=T["hdr_bg"], fg=T["hdr_fg"]).pack(side="left", pady=10)
+
+        body = tk.Frame(self, bg=T["root"])
+        body.pack(fill="both", expand=True, padx=16, pady=(12, 4))
+
+        tk.Label(body,
+                 text="Für das Erstellen eines PUNKTWOLKE-Datenpakets im GDWH-Catalog "
+                      "bitte nur folgende Attribute ausfüllen / wählen, Rest leer lassen:",
+                 font=("Segoe UI", 9),
+                 bg=T["root"], fg=T["fg"], anchor="w", justify="left",
+                 wraplength=520).pack(fill="x", pady=(0, 8))
+
+        for label in ("Name", "LayerReleaseKey", "ReleaseModelKey"):
+            tk.Label(body, text=f"✓  {label}", font=("Segoe UI", 9, "bold"),
+                     bg=T["root"], fg=T["accent"], anchor="w",
+                     justify="left").pack(fill="x", pady=1)
+
+        tk.Frame(body, height=1, bg=T["sep"]).pack(fill="x", pady=(10, 8))
+
+        tk.Label(body, text="Felder müssen leer bleiben:",
+                 font=("Segoe UI", 9),
+                 bg=T["root"], fg=T["fg"], anchor="w", justify="left").pack(fill="x")
+
+        for label in ("ReleaseKey", "FullExportFileNameKey"):
+            tk.Label(body, text=f"✗  {label}", font=("Segoe UI", 9, "bold"),
+                     bg=T["root"], fg=T["fg_dim"], anchor="w",
+                     justify="left").pack(fill="x", pady=1)
+
+        tk.Frame(self, height=1, bg=T["sep"]).pack(side="bottom", fill="x")
+        btn_row = tk.Frame(self, bg=T["root"])
+        btn_row.pack(side="bottom", fill="x", padx=14, pady=10)
+
+        tk.Button(btn_row, text=f"Weiter zum GDWH-{env_label} Portal",
+                  font=("Segoe UI", 10, "bold"),
+                  bg="#005fa3" if dark else "#0063b1", fg="#ffffff",
+                  activebackground=T["sel_bg"], activeforeground="#ffffff",
+                  relief="flat", padx=14, pady=7, cursor="hand2",
+                  command=self._on_continue).pack(side="right")
+
+        self.update_idletasks()
+        w = 520
+        h = self.winfo_reqheight() + 20
+        px = parent.winfo_rootx() + parent.winfo_width() // 2 - w // 2
+        py = parent.winfo_rooty() + parent.winfo_height() // 2 - h // 2
+        self.geometry(f"{w}x{h}+{px}+{py}")
+
+        self._set_titlebar_dark(dark)
+        self.bind("<Escape>", lambda _: self._on_cancel())
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _on_cancel(self):
+        self.destroy()
+
+    def _on_continue(self):
+        try:
+            webbrowser.open(self._url)
+        except Exception:
+            pass
+        self.destroy()
+
+    def _set_titlebar_dark(self, dark):
+        if not self.winfo_ismapped():
+            self.after(50, lambda: self._set_titlebar_dark(dark))
+            return
+        try:
+            hwnd  = int(self.wm_frame(), 16)
+            value = ctypes.c_int(1 if dark else 0)
+            for attr in (20, 19):   # 20 = Win11 / Win10 2004+; 19 = ältere Builds
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+                    break
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
+        except Exception:
+            pass
+
+
 class NoDataPreviewWindow(tk.Toplevel):
     """Popup-Viewer für die "check input-NoData"-Tiff-Vorschau (PPM-Datei).
 
@@ -1560,9 +1657,15 @@ class GDWHApp(tk.Tk):
             self._update_staging_label()
 
     def _open_catalog_portal(self, host):
-        """Oeffnet den GDWH-Catalog-Import-Link (PROD/INT) des gewaehlten GDS im Standardbrowser."""
+        """Oeffnet den GDWH-Catalog-Import-Link (PROD/INT) des gewaehlten GDS im Standardbrowser.
+        Bei SB_DSM_PUNKTWOLKE wird vorher ein Hinweis zu den im Portal zu setzenden
+        Attributen angezeigt (Bestaetigung ueber "Weiter zum GDWH-PROD/-INT Portal")."""
         gds = self.gds_var.get()
         url = f"https://{host}/catalog-ng/catalog/{gds}/import"
+        if gds == "SB_DSM_PUNKTWOLKE":
+            env_label = "PROD" if host == CATALOG_HOST_PROD else "INT"
+            PunktwolkeAttributeHinweisDialog(self, url, env_label, dark=self._dark)
+            return
         try:
             webbrowser.open(url)
         except Exception:
