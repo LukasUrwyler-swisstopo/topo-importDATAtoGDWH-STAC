@@ -1321,7 +1321,7 @@ class GDWHApp(tk.Tk):
         self.fix_nodata_var = tk.BooleanVar(value=True)
         self.fix_nodata_cb = ttk.Checkbutton(
             sec, variable=self.fix_nodata_var,
-            text="ADS100: fixing false NoData pixels in DATA",)
+            text="ADS: fixing false NoData pixels in DATA",)
         self.fix_nodata_cb.grid(row=r + 1, column=2, sticky="w", padx=(16, 0), pady=3)
         r += 2
 
