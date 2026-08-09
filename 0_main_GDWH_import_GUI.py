@@ -1318,7 +1318,7 @@ class GDWHApp(tk.Tk):
         # eigentliche Maskenberechnung (Script 1) startet. Echte grosse
         # NoData-Flächen bleiben unverändert. NoData-Zielwert wird aus der
         # Auswahl oben (self.nodata_var) übernommen.
-        self.fix_nodata_var = tk.BooleanVar(value=True)
+        self.fix_nodata_var = tk.BooleanVar(value=False)
         self.fix_nodata_cb = ttk.Checkbutton(
             sec, variable=self.fix_nodata_var,
             text="ADS: fixing false NoData pixels in DATA",)
