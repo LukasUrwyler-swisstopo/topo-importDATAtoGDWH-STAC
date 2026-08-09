@@ -67,7 +67,11 @@ def _run_fix_false_nodata(mod3, quelle, meta):
             strip_existing_mask=True, write_mask=True,
             rewrite_real_nodata_to_zero=(nodata_value == 255))
         n_px_total += result["n_increment_px"]
-        print(f"  {fn}: {result['n_groups']} Gruppe(n), {result['n_increment_px']} Pixel korrigiert", flush=True)
+        shadow_info = (
+            f", {result['n_shadow_px']} Schattenpixel (0,0,0) geschuetzt"
+            if result.get("n_shadow_px") else ""
+        )
+        print(f"  {fn}: {result['n_groups']} Gruppe(n), {result['n_increment_px']} Pixel korrigiert{shadow_info}", flush=True)
         for g in result["group_rows"]:
             print(f"    Gruppe {g['label_id']}: {g['size_px']} px, "
                   f"Randkontakt={g['border_contact_px']}, "

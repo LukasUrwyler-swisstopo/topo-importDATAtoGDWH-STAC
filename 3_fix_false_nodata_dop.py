@@ -106,6 +106,24 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# Fixe Korrekturwerte (keine GUI-/CLI-Parameter mehr, siehe Docstrings unten)
+# ---------------------------------------------------------------------------
+
+# "Falsche NoData" 255,255,255 (Ueberstrahlung/Gletscher, siehe classify_mask):
+# fixe Verschiebung auf 254,254,254, statt frueher variablem --increment.
+FALSE_NODATA_255_SHIFT = -1
+
+# Schatten-Puffer (siehe _shadow_buffer_shift): alle Pixel, deren R-, G- und
+# B-Wert gleichzeitig <= SHADOW_BUFFER_MAX_VALUE sind, gelten als potenzielle
+# Schatten-Clipping-Pixel. Die Erhoehung richtet sich nach dem kleinsten
+# Kanalwert des Pixels (Tiefe des "Schwarz-Einbruchs") - je naeher an exakt
+# 0,0,0, desto groesser die Erhoehung. Das erzeugt einen weichen Uebergang
+# statt eines scharfen Sprungs allein bei exakt 0,0,0.
+SHADOW_BUFFER_MAX_VALUE = 5
+SHADOW_BUFFER_TIERS = {0: 5, 1: 4, 2: 3, 3: 2, 4: 1, 5: 1}
+
+
+# ---------------------------------------------------------------------------
 # Kernlogik (ohne GDAL-Abhaengigkeit, separat testbar)
 # ---------------------------------------------------------------------------
 
@@ -319,6 +337,80 @@ def classify_mask(mask_zero, band_arrays_rgb, nodata_value, threshold=25000,
     return increment_mask, log_rows
 
 
+def _shadow_buffer_shift(band_arrays_rgb):
+    """
+    Bestimmt Maske und Erhoehungsbetrag fuer die Schatten-Puffer-Korrektur
+    (siehe SHADOW_BUFFER_TIERS oben).
+
+    Jedes Pixel, bei dem R, G und B gleichzeitig <= SHADOW_BUFFER_MAX_VALUE
+    sind, ist ein Kandidat. Der Erhoehungsbetrag richtet sich nach dem
+    kleinsten der drei Kanalwerte (min(R,G,B)) - je dunkler, desto groesser
+    die Erhoehung. Damit werden nicht nur exakte 0,0,0-Pixel angehoben,
+    sondern auch ihre nahe-schwarzen Nachbarn (z.B. 1,2,2), gestuft
+    abnehmend. Ohne diesen Puffer bliebe der direkte Nachbar eines von
+    0,0,0 auf 5,5,5 angehobenen Pixels unveraendert bei z.B. 1,2,2 - ein
+    unnatuerlicher Sprung.
+
+    band_arrays_rgb: Liste der drei RGB-Baender (Original-Pixelwerte, vor
+    jeder Veraenderung in diesem Verarbeitungsschritt).
+
+    Rueckgabe:
+        mask  : bool-Array, True wo die Korrektur greift
+        shift : int32-Array (gleiche Form), Erhoehungsbetrag pro Pixel
+                (nur an Stellen mask=True gueltig, sonst 0)
+    """
+    stacked = np.stack([b.astype(np.int32) for b in band_arrays_rgb], axis=0)
+    channel_max = stacked.max(axis=0)
+    channel_min = stacked.min(axis=0)
+    mask = channel_max <= SHADOW_BUFFER_MAX_VALUE
+
+    tier_lookup = np.array(
+        [SHADOW_BUFFER_TIERS[v] for v in range(SHADOW_BUFFER_MAX_VALUE + 1)],
+        dtype=np.int32,
+    )
+    shift = np.zeros(mask.shape, dtype=np.int32)
+    shift[mask] = tier_lookup[channel_min[mask]]
+    return mask, shift
+
+
+def _false_nodata_correction(band_arrays_rgb, mask_zero, increment_mask, nodata_value):
+    """
+    Bestimmt Maske und Verschiebungsbetrag fuer die "falsche NoData"-
+    Korrektur (ersetzt die frueher hier verwendete flache +/-increment-
+    Anhebung durch feste, nicht mehr per GUI/CLI konfigurierbare Werte).
+
+    nodata_value == 255 (Ueberstrahlung/Gletscher):
+      Fixe Verschiebung FALSE_NODATA_255_SHIFT (-1, also 255 -> 254) auf
+      allen Pixeln der von classify_mask als "falsch" eingestuften
+      255,255,255-Gruppen (increment_mask).
+
+    nodata_value == 0 (Schatten-Clipping):
+      Statt nur exakte 0,0,0-Pixel einer falschen Gruppe pauschal
+      anzuheben, greift hier die gestufte Schatten-Puffer-Korrektur
+      (_shadow_buffer_shift) - deckt auch die nahe-schwarzen Nachbarpixel
+      ab, unabhaengig davon, ob sie ueberhaupt Teil einer von classify_mask
+      erkannten Gruppe sind (die meisten davon sind es nicht, weil sie
+      nicht exakt 0,0,0 sind). Einzige Ausnahme: Pixel, die exakt
+      0,0,0 sind UND zu einer von classify_mask als "echt" eingestuften
+      Gruppe gehoeren (mask_zero abzueglich increment_mask), bleiben
+      unangetastet - sonst wuerde die nachgelagerte, wertbasierte Erkennung
+      von echtem NoData (exakt 0,0,0) brechen.
+
+    Rueckgabe: (mask, shift) - shift ist ein int32-Array, an mask=False
+    Stellen 0 (ungueltig).
+    """
+    if nodata_value == 255:
+        shift = np.zeros(mask_zero.shape, dtype=np.int32)
+        shift[increment_mask] = FALSE_NODATA_255_SHIFT
+        return increment_mask, shift
+
+    buffer_mask, buffer_shift = _shadow_buffer_shift(band_arrays_rgb)
+    real_zero_mask = mask_zero & ~increment_mask
+    mask = buffer_mask & ~real_zero_mask
+    shift = np.where(mask, buffer_shift, 0).astype(np.int32)
+    return mask, shift
+
+
 # ---------------------------------------------------------------------------
 # GDAL I/O
 # ---------------------------------------------------------------------------
@@ -363,7 +455,7 @@ def _copy_sidecar_tfw(src_path, dst_path):
     return None
 
 
-def process_tile(src_path, dst_path, threshold=25000, increment=7,
+def process_tile(src_path, dst_path, threshold=25000,
                   connectivity=8, write_tfw=False,
                   strip_existing_mask=False, fallback_epsg=2056,
                   nodata_value=0, write_mask=False,
@@ -378,9 +470,11 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
 
     nodata_value:
       Der zu korrigierende NoData-Zielwert (0 -> schwarz, 255 -> weiss),
-      z.B. aus der GUI-Wahl "NoData der Quelldaten" uebernommen. Falsche
-      Pixel werden von diesem Wert weg verschoben: bei 0 um +increment,
-      bei 255 um -increment (symmetrisch).
+      z.B. aus der GUI-Wahl "NoData der Quelldaten" uebernommen. Die
+      "falsche NoData"-Korrektur (siehe _false_nodata_correction) verwendet
+      dafuer feste, nicht mehr konfigurierbare Werte: bei nodata_value=255
+      FALSE_NODATA_255_SHIFT (-1, 255 -> 254); bei nodata_value=0 die
+      gestufte Schatten-Puffer-Korrektur (SHADOW_BUFFER_TIERS).
 
     min_border_contact:
       Dritte Bedingung fuer "echtes NoData" (siehe classify_mask): eine
@@ -425,6 +519,19 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
       Pixelarrays - kein zusaetzlicher Lese-/Schreibdurchgang. Ziel: Pixelwerte,
       Flag Mask und NoData-Tag/XML sind danach durchgehend konsistent auf 0
       normalisiert, nicht nur Tag/XML wie bisher.
+
+      Schatten-Pixel-Schutz: unmittelbar VOR diesem 255->0-Wechsel laeuft die
+      gestufte Schatten-Puffer-Korrektur (_shadow_buffer_shift, siehe dort)
+      global ueber die ganze Kachel - alle zu diesem Zeitpunkt nahe-schwarzen
+      Pixel (R,G,B <= SHADOW_BUFFER_MAX_VALUE, normale, sehr dunkle
+      Nutzdaten-Schattenpixel - echtes NoData steht ja noch bei
+      255,255,255) werden je nach Tiefe des Schwarz-Einbruchs gestuft
+      angehoben (SHADOW_BUFFER_TIERS). Ohne diesen Schritt waeren exakte
+      0,0,0-Schattenpixel nach dem Wechsel wertidentisch mit echtem NoData;
+      da manche Software den NoData-Tag wertbasiert statt nur ueber die Flag
+      Mask auswertet, wuerden sie sonst faelschlich als NoData/transparent
+      behandelt. Die Stufung (statt einer einzigen festen Anhebung) vermeidet
+      ausserdem einen sichtbaren Sprung an der Kante der angehobenen Zone.
 
     .tfw-Handling:
       - Existiert neben src_path eine .tfw-Datei, wird diese unveraendert
@@ -491,9 +598,13 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
     # Ueberarbeitung nicht mehr, der Filter war seither immer leer.
     group_rows = log_rows
 
-    # Richtung: bei 0 (schwarz) nach oben, bei 255 (weiss) nach unten -
-    # falsche Pixel bewegen sich immer vom NoData-Zielwert weg.
-    signed_increment = increment if nodata_value == 0 else -increment
+    # "Falsche NoData"-Korrektur (siehe _false_nodata_correction): fixer
+    # -1-Shift bei nodata_value=255, gestufte Schatten-Puffer-Korrektur bei
+    # nodata_value=0. correction_mask/-shift werden auf den noch
+    # unveraenderten Original-Pixelwerten berechnet.
+    correction_mask, correction_shift = _false_nodata_correction(
+        band_arrays[:3], mask_zero, increment_mask, nodata_value
+    )
 
     driver = gdal.GetDriverByName("GTiff")
     sidecar_copied = _copy_sidecar_tfw(src_path, dst_path)
@@ -528,17 +639,42 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
         # auf der korrigierten Datei, aber ohne zusaetzlichen Lesedurchgang.
         real_nodata_mask = mask_zero & ~increment_mask
         do_rewrite = rewrite_real_nodata_to_zero and nodata_value == 255
-        has_increment = increment_mask.any()
+        has_correction = correction_mask.any()
         has_rewrite = do_rewrite and real_nodata_mask.any()
+
+        # Schatten-Pixel-Schutz (nur bei nodata_value=255 mit aktivem
+        # rewrite_real_nodata_to_zero, siehe Docstring oben): zu diesem
+        # Zeitpunkt stehen alle Original-Pixel noch unveraendert im Speicher,
+        # echtes NoData ist also weiterhin 255,255,255 - jedes nahe-schwarze
+        # Pixel (siehe _shadow_buffer_shift) kann daher nur ein ganz
+        # normaler, sehr dunkler Nutzdaten-Schattenpixel sein (nicht Teil
+        # von mask_zero/real_nodata_mask, die pruefen ja auf 255). Ohne
+        # diese Anhebung waeren exakte 0,0,0-Schattenpixel nach dem gleich
+        # folgenden echten NoData-Wechsel (255->0) wertidentisch mit echtem
+        # NoData - manche Software liest den NoData-Tag wertbasiert (nicht
+        # nur ueber die Flag Mask) und wuerde die Schattenpixel dann
+        # faelschlich als NoData/transparent behandeln.
+        shadow_mask = None
+        shadow_shift = None
+        has_shadow = False
+        if do_rewrite:
+            shadow_mask, shadow_shift = _shadow_buffer_shift(band_arrays[:3])
+            has_shadow = shadow_mask.any()
 
         for i in range(3):
             # Kein .copy() mehr noetig: band_arrays[i] wird danach nicht
             # mehr im Originalzustand gebraucht, direktes In-Place-Aendern
             # spart eine komplette zusaetzliche Array-Kopie im Speicher.
             arr = band_arrays[i]
-            if has_increment:
-                new_vals = arr[increment_mask].astype(np.int32) + signed_increment
-                arr[increment_mask] = np.clip(new_vals, 0, 255).astype(dtype)
+            if has_correction:
+                new_vals = arr[correction_mask].astype(np.int32) + correction_shift[correction_mask]
+                arr[correction_mask] = np.clip(new_vals, 0, 255).astype(dtype)
+            if has_shadow:
+                # Reihenfolge wichtig: MUSS vor has_rewrite laufen, sonst
+                # waeren die soeben auf 0 gesetzten echten NoData-Pixel
+                # (real_nodata_mask) mit im shadow_mask enthalten.
+                shadow_vals = arr[shadow_mask].astype(np.int32) + shadow_shift[shadow_mask]
+                arr[shadow_mask] = np.clip(shadow_vals, 0, 255).astype(dtype)
             if has_rewrite:
                 arr[real_nodata_mask] = 0
             out_band = out_ds.GetRasterBand(i + 1)
@@ -558,7 +694,8 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
 
         return {
             "n_groups": len(log_rows),
-            "n_increment_px": int(increment_mask.sum()),
+            "n_increment_px": int(correction_mask.sum()),
+            "n_shadow_px": int(shadow_mask.sum()) if shadow_mask is not None else 0,
             "group_rows": group_rows,
             "tfw": "kopiert" if sidecar_copied else ("erzeugt" if create_options else "keine"),
             "epsg_fallback": fallback_epsg if used_fallback_epsg else None,
@@ -570,13 +707,15 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
     # vorbestehende falsche Maske)
     create_options = ["TFW=YES"] if (write_tfw and not sidecar_copied) else []
 
-    if int(mask_zero.sum()) == 0:
+    has_correction = correction_mask.any()
+    if not has_correction:
         driver.CreateCopy(dst_path, ds, options=create_options)
         ds = None
         return {
-            "n_groups": 0,
+            "n_groups": len(log_rows),
             "n_increment_px": 0,
-            "group_rows": [],
+            "n_shadow_px": 0,
+            "group_rows": group_rows,
             "tfw": "kopiert" if sidecar_copied else ("erzeugt" if create_options else "keine"),
             "epsg_fallback": None,
             "alte_baender_verworfen": 0,
@@ -584,13 +723,11 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
 
     out_ds = driver.CreateCopy(dst_path, ds, options=create_options)
 
-    has_increment = increment_mask.any()
     for i in range(3):
         # Kein .copy() mehr noetig, siehe strip_existing_mask-Zweig oben.
         arr = band_arrays[i]
-        if has_increment:
-            new_vals = arr[increment_mask].astype(np.int32) + signed_increment
-            arr[increment_mask] = np.clip(new_vals, 0, 255).astype(dtype)
+        new_vals = arr[correction_mask].astype(np.int32) + correction_shift[correction_mask]
+        arr[correction_mask] = np.clip(new_vals, 0, 255).astype(dtype)
         _write_band_chunked(out_ds.GetRasterBand(i + 1), arr)
 
     # Weitere Baender (z.B. 4. Kanal) unveraendert uebernehmen
@@ -603,7 +740,8 @@ def process_tile(src_path, dst_path, threshold=25000, increment=7,
 
     return {
         "n_groups": len(log_rows),
-        "n_increment_px": int(increment_mask.sum()),
+        "n_increment_px": int(correction_mask.sum()),
+        "n_shadow_px": 0,
         "group_rows": group_rows,
         "tfw": "kopiert" if sidecar_copied else ("erzeugt" if create_options else "keine"),
         "epsg_fallback": None,
@@ -624,7 +762,7 @@ def process_tile_inplace(path, backup_dir=None, **kwargs):
     vorher dorthin kopiert, als Sicherheitsnetz bei Produktionsdaten.
 
     **kwargs werden 1:1 an process_tile() weitergereicht (threshold,
-    increment, connectivity, write_tfw, strip_existing_mask, fallback_epsg,
+    connectivity, write_tfw, strip_existing_mask, fallback_epsg,
     write_mask, rewrite_real_nodata_to_zero, min_border_contact,
     gradient_tolerance, gradient_ring_fraction, min_fill_ratio,
     enable_gradient_check, enable_fill_ratio_check).
@@ -697,8 +835,6 @@ def main():
     parser.add_argument("--enable-fill-ratio-check", action="store_true",
                          help="Stufe E (Bounding-Box-Fuellgrad) aktivieren - wirkt nur zusammen mit "
                               "--enable-gradient-check, standardmaessig AUS (siehe Docstring classify_mask).")
-    parser.add_argument("--increment", type=int, default=7,
-                         help="Wert, um den falsche NoData-Pixel vom NoData-Zielwert weg verschoben werden (Default: 7)")
     parser.add_argument("--nodata-value", type=int, choices=[0, 255], default=0,
                          help="NoData-Zielwert der Quelldaten: 0 = schwarz (Default), 255 = weiss")
     parser.add_argument("--connectivity", type=int, choices=[4, 8], default=8,
@@ -785,7 +921,6 @@ def main():
         try:
             common_kwargs = dict(
                 threshold=args.threshold,
-                increment=args.increment,
                 connectivity=args.connectivity,
                 write_tfw=args.write_tfw,
                 strip_existing_mask=args.strip_existing_mask,
@@ -808,6 +943,8 @@ def main():
                 extra += f", EPSG-Fallback {result['epsg_fallback']} verwendet"
             if result.get("alte_baender_verworfen"):
                 extra += f", {result['alte_baender_verworfen']} alte(s) Band/Baender verworfen"
+            if result.get("n_shadow_px"):
+                extra += f", {result['n_shadow_px']} Schattenpixel (0,0,0) geschuetzt"
             print(
                 f"{name}: {result['n_groups']} Gruppen gefunden, "
                 f"{result['n_increment_px']} Pixel angehoben, "

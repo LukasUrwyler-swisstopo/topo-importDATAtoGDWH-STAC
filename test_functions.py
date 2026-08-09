@@ -911,7 +911,7 @@ class TestFixNodataSicherheitsDefaults(unittest.TestCase):
     def test_process_tile_defaults(self):
         sig = inspect.signature(fixnodata.process_tile)
         self.assertEqual(sig.parameters["threshold"].default, 25000)
-        self.assertEqual(sig.parameters["increment"].default, 7)
+        self.assertNotIn("increment", sig.parameters)
         self.assertEqual(sig.parameters["min_border_contact"].default, 100)
         self.assertFalse(sig.parameters["enable_gradient_check"].default)
         self.assertFalse(sig.parameters["enable_fill_ratio_check"].default)
