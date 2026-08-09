@@ -1269,6 +1269,18 @@ class GDWHApp(tk.Tk):
         self._dim_labels.append(area_hint)
         r += 2
 
+        # CameraSystem – bewusst direkt nach Area/vor TileKey/NoData:
+        # bei Leica DMC-4 ist die "fixing false NoData pixels"-Option (siehe
+        # unten) nicht moeglich, die Sichtbarkeit der NoData-Vorkorrektur haengt
+        # also mit von dieser Auswahl ab.
+        ttk.Label(sec, text="CameraSystem:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
+        self.camera_var = tk.StringVar(value=CAMERA_SYSTEMS[0])
+        ttk.Combobox(sec, textvariable=self.camera_var, values=CAMERA_SYSTEMS,
+                      state="readonly", width=20
+                      ).grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
+        self.camera_var.trace_add("write", lambda *_: self._update_fix_nodata_visibility())
+        r += 1
+
         # TileKey – reine Diagnose-Vorschau (Beispiel aus der ersten Datei),
         # nicht editierbar: TileKey wird pro Datei einzeln berechnet.
         ttk.Label(sec, text="TileKey (Beispiel):", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
@@ -1319,14 +1331,6 @@ class GDWHApp(tk.Tk):
         ttk.Combobox(sec, textvariable=self.terrain_var, values=TERRAIN_MODELS,
                       state="readonly", width=68
                       ).grid(row=r, column=1, sticky="ew", padx=(8, 0), pady=3)
-        r += 1
-
-        # CameraSystem
-        ttk.Label(sec, text="CameraSystem:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
-        self.camera_var = tk.StringVar(value=CAMERA_SYSTEMS[0])
-        ttk.Combobox(sec, textvariable=self.camera_var, values=CAMERA_SYSTEMS,
-                      state="readonly", width=20
-                      ).grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
         r += 1
 
         # SourceReferenceSystem (unveränderlich)
@@ -1719,10 +1723,9 @@ class GDWHApp(tk.Tk):
             self.check_nodata_btn.grid()
             # Vorkorrektur falsche NoData-Pixel: nur für SB_DOP (Mosaik, 8BIT
             # RGB) sinnvoll, nicht für SB_DOP_16 (Einzellinien, eigene Radiometrie).
-            if gds == "SB_DOP":
-                self.fix_nodata_cb.grid()
-            else:
-                self.fix_nodata_cb.grid_remove()
+            # Zusaetzlich abhaengig von CameraSystem, siehe
+            # _update_fix_nodata_visibility().
+            self._update_fix_nodata_visibility()
 
         # INPUT_FOLDER (SB_DOP_16) vs. Data-Input Path (andere GDS)
         self.if_frame.grid()         if is_d16 else self.if_frame.grid_remove()
@@ -1749,6 +1752,25 @@ class GDWHApp(tk.Tk):
 
         self._refresh_area_tilekey_preview()
         self._update_start_btn_state()
+
+    def _update_fix_nodata_visibility(self):
+        """Sichtbarkeit von 'fixing false NoData pixels' (nur ADS100-Radiometrie
+        relevant, siehe Checkbox-Text): ausgeblendet ausser bei GDS SB_DOP UND
+        CameraSystem != Leica DMC-4. Bei DMC-4 wird die Option zusaetzlich aktiv
+        deaktiviert (nicht nur versteckt), falls sie zuvor angehakt war - DMC-4
+        hat eine andere Radiometrie, die Vorkorrektur ist dafuer nicht vorgesehen.
+        Wird sowohl bei GDS- als auch bei CameraSystem-Wechsel aufgerufen (siehe
+        _on_gds_change bzw. camera_var-Trace in _build_meta)."""
+        if not hasattr(self, "fix_nodata_cb"):
+            return
+        gds = self.gds_var.get()
+        camera = self.camera_var.get()
+        if gds == "SB_DOP" and camera != "Leica DMC-4":
+            self.fix_nodata_cb.grid()
+        else:
+            self.fix_nodata_cb.grid_remove()
+            if camera == "Leica DMC-4":
+                self.fix_nodata_var.set(False)
 
     # ── Area / TileKey Live-Vorschau ─────────────────────────────────────────
     _TILEKEY_RE = re.compile(r'^\d{4}_\d{4}$')
