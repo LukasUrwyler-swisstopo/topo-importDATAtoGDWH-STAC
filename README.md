@@ -68,13 +68,17 @@ Hauptscript starten  (GUI)
         │   0,0,0 normalisiert, siehe unten)
         │
         ├─ Quellordner bereinigen  (nur Nutzdaten behalten – Whitelist pro GDS)
-        ├─ [SB_DSM_PUNKTWOLKE only]  CRS-Tag auf allen .laz-Tiles setzen
+        ├─ [SB_DSM_PUNKTWOLKE only, optional – Checkbox, default AUS]  CRS-Tag
+        │   auf allen .laz-Tiles setzen
         │   (PDAL `readers.las` `override_srs` = `EPSG:2056+5728` – NUR Tag,
         │   KEINE Reprojektion, Koordinaten bleiben unverändert. Tiles mit
         │   bereits gesetztem CRS werden übersprungen, nicht überschrieben.
         │   Stichproben-Verifikation per `pdal info --metadata`; schlägt
         │   auch nur eine Datei fehl, bricht der Lauf ab – noch vor XML/
-        │   Kopieren, siehe unten)
+        │   Kopieren, siehe unten. Jede Kachel wird beim Taggen komplett neu
+        │   geschrieben – bei vielen/grossen Tiles der langsamste Teil des
+        │   Imports, deshalb standardmässig deaktiviert; nur aktivieren, wenn
+        │   die Quelltiles tatsächlich kein CRS im Header haben)
         ├─ XML-Generierung  (pro .tif / .laz)
         ├─ NoData-Tag im TIFF setzen  (GDAL SetNoDataValue, pro Band)
         ├─ Interne Maske im TIFF setzen  (GDAL_TIFF_INTERNAL_MASK, 1-bit DEFLATE –
@@ -94,7 +98,9 @@ Hauptscript starten  (GUI)
         │   Bei NoData 255,255,255 (und Checkbox NICHT aktiviert): echte
         │   NoData-Pixel werden hier ebenfalls zusaetzlich auf 0,0,0
         │   normalisiert, siehe unten – hier IMMER neu berechnet, kein Skip.)
-        ├─ Daten ins Bucket kopieren  (NV-Ordner; PUNKTWOLKE: +PrecalculatedFormats)
+        ├─ Daten ins Bucket kopieren  (NV-Ordner; PUNKTWOLKE: +PrecalculatedFormats -
+        │   die PrecalculatedFormats-Kopie wird aus der bereits geschriebenen
+        │   NV-Datei erstellt, nicht nochmal aus der Original-Quelle gelesen)
         └─ files.csv erstellen  (MD5-Hash, TileKey, WKT-Footprint)
                 │
                 ▼

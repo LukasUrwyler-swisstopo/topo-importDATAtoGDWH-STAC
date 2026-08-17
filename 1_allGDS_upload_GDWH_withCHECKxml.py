@@ -773,8 +773,11 @@ def preview_xml_attributes(src, GDS, meta_info):
         print(f"NoData: {get_nodata_value(example_file, GDS, meta_info)}")
     else:
         print("NoData: <LAZ hat kein noData-Value>")
-        print(f"CRS-Zuweisung: Tiles ohne CRS im Header werden vor der Verarbeitung mit "
-              f"{LAZ_TARGET_SRS} getaggt (nur Tag, keine Reprojektion - siehe Log).")
+        if meta_info.get("TagCrsLaz"):
+            print(f"CRS-Zuweisung: AKTIV - Tiles ohne CRS im Header werden vor der Verarbeitung mit "
+                  f"{LAZ_TARGET_SRS} getaggt (nur Tag, keine Reprojektion - siehe Log).")
+        else:
+            print("CRS-Zuweisung: DEAKTIVIERT - Tiles ohne CRS im Header bleiben ungetaggt!")
 
     line_ids = meta_info.get("Line_ID", [])
     print(",".join(line_ids))
@@ -903,19 +906,21 @@ def update_file_csv(output_path, full_file_path, GDS):
         # berechnen (spart den separaten calculate_md5-Lesevorgang).
         dst_nv = os.path.join(output_path, "NV", "SB_DSM_PUNKTWOLKE")
         os.makedirs(dst_nv, exist_ok=True)
-        md5 = copy_with_retry_md5(full_file_path, os.path.join(dst_nv, name))
+        dst_nv_file = os.path.join(dst_nv, name)
+        md5 = copy_with_retry_md5(full_file_path, dst_nv_file)
 
         xml_src = full_file_path.rsplit('.', 1)[0] + ".xml"
         if os.path.exists(xml_src):
             copy_with_retry(xml_src, os.path.join(dst_nv, os.path.basename(xml_src)))
 
-        # Zweites Ziel: PrecalculatedFormats\SB_DSM_PUNKTWOLKE (andere
-        # Zieldatei/-name, deshalb weiterhin ein eigener Lesevorgang der
-        # Quelle noetig - gleiche MD5 wie oben, da identischer Inhalt).
+        # Zweites Ziel: PrecalculatedFormats\SB_DSM_PUNKTWOLKE (anderer
+        # Zieldateiname, identischer Inhalt). Quelle dafuer ist die soeben
+        # geschriebene dst_nv_file, NICHT nochmal full_file_path - spart den
+        # zweiten vollen Lesevorgang der (ggf. entfernten) Original-Quelle.
         dst_pre = os.path.join(output_path, "PrecalculatedFormats", "SB_DSM_PUNKTWOLKE")
         os.makedirs(dst_pre, exist_ok=True)
         new_name = f"SB_DSM_PUNKTWOLKE_LAZ_CHLV95_LN02_{tilekey}.laz"
-        copy_with_retry(full_file_path, os.path.join(dst_pre, new_name))
+        copy_with_retry(dst_nv_file, os.path.join(dst_pre, new_name))
 
         row_nv  = f"NV\\SB_DSM_PUNKTWOLKE\\{name};{md5};{tilekey};add;"
         row_pre = f"PrecalculatedFormats\\SB_DSM_PUNKTWOLKE\\{new_name};{md5};{tilekey};add;"
@@ -1006,7 +1011,12 @@ def files_in_order(src, out, GDS, meta):
     # Bricht bewusst den ganzen Lauf ab, wenn auch nur eine Datei fehlschlaegt
     # oder die Stichproben-Verifikation misslingt - eine ungetaggte/nicht
     # verifizierte Punktwolke soll nicht unbemerkt nach GDWH gelangen.
-    if GDS == "SB_DSM_PUNKTWOLKE":
+    # Optional (GUI-Checkbox "TagCrsLaz", default AUS): jede Kachel wird beim
+    # Taggen komplett neu geschrieben (PDAL readers.las/writers.las) - bei
+    # vielen/grossen Tiles der langsamste Teil des Imports. Wenn die
+    # Quelltiles bereits ein CRS im Header haben, kann der Schritt uebersprungen
+    # werden.
+    if GDS == "SB_DSM_PUNKTWOLKE" and meta.get("TagCrsLaz"):
         crs_summary = tag_crs_on_laz_folder(src)
         if crs_summary["failed"] > 0:
             log("Abbruch: CRS-Zuweisung fuer mindestens eine Datei fehlgeschlagen (siehe oben).")
