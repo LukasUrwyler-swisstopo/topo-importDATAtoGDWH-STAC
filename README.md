@@ -4,7 +4,7 @@ Ein GUI-Tool, das den kompletten Ablauf von der Datenvorbereitung bis zum STAC-I
 
 ---
 
-## 🚀 Schnellstart
+## Schnellstart
 
 ```
 python 0_main_GDWH_import_GUI.py
