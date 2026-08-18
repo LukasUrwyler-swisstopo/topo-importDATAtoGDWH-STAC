@@ -2207,6 +2207,10 @@ class GDWHApp(tk.Tk):
             # GDWH-BUCKET Path zuruecksetzen: verhindert, dass eine naechste
             # Prozessierung versehentlich ins selbe (alte) Bucket schreibt.
             self.ziel_var.set("")
+            # "ADS: fixing false NoData pixels"-Option zuruecksetzen: verhindert,
+            # dass sie bei einer naechsten Prozessierung faelschlicherweise
+            # noch aktiv ist.
+            self.fix_nodata_var.set(False)
             self._update_start_btn_state()
             ImportDoneDialog(self, gds, ordner_name, ziel=ziel, dark=self._dark).wait()
         else:
