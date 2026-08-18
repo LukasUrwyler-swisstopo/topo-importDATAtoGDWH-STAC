@@ -2204,6 +2204,10 @@ class GDWHApp(tk.Tk):
             self._pending_archive = None
             self._pending_ziel    = None
             ordner_name = os.path.basename(ziel.replace("/", "\\").rstrip("\\")) if ziel else ""
+            # GDWH-BUCKET Path zuruecksetzen: verhindert, dass eine naechste
+            # Prozessierung versehentlich ins selbe (alte) Bucket schreibt.
+            self.ziel_var.set("")
+            self._update_start_btn_state()
             ImportDoneDialog(self, gds, ordner_name, ziel=ziel, dark=self._dark).wait()
         else:
             self._pending_archive = None
