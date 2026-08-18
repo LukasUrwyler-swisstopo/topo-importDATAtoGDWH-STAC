@@ -7,8 +7,8 @@ Ein GUI-Tool, das den kompletten Ablauf von der Datenvorbereitung bis zum STAC-I
 ## Schnellstart
 
 ```
-cmd (Terminal) starten (Win-Taste + eingabe "cmd")
-python 0_main_GDWH_import_GUI.py
+**cmd (Terminal) starten** (Win-Taste + eingabe "cmd"):
+...>python 0_main_GDWH_import_GUI.py
 ```
 
 <img width="452" height="617" alt="GUI" src="https://github.com/user-attachments/assets/1153f60c-7824-451e-a4dd-6f8c2e023e9b" />
