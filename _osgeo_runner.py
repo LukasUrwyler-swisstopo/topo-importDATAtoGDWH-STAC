@@ -8,7 +8,6 @@ import sys
 import os
 import json
 import shutil
-import tempfile
 import builtins
 import importlib.util
 import traceback
@@ -103,11 +102,24 @@ def _stage_locally(quelle, ziel, staging_root):
     ohne das wuerden beim Zurueckkopieren bereits vorhandene Eintraege aus
     frueheren Laeufen verloren gehen.
 
+    Der Job-Ordner wird nach dem letzten Ordnernamen von ziel (Bucket-Ordner)
+    benannt statt einem Zufallsnamen - erleichtert die Zuordnung bei manueller
+    Kontrolle des Staging-Verzeichnisses. Ist der Name bereits belegt (z.B.
+    Ueberrest eines abgebrochenen Laufs), wird ein Zaehler-Suffix angehaengt.
+
     Gibt (local_quelle, local_ziel, job_dir) zurueck. job_dir muss nach der
     Verarbeitung mit _cleanup_staging() entfernt werden.
     """
     os.makedirs(staging_root, exist_ok=True)
-    job_dir = tempfile.mkdtemp(prefix="job_", dir=staging_root)
+    job_name = os.path.basename(os.path.normpath(ziel)) or "job"
+    job_dir = os.path.join(staging_root, job_name)
+    if os.path.exists(job_dir):
+        for i in range(2, 1000):
+            candidate = os.path.join(staging_root, f"{job_name}_{i}")
+            if not os.path.exists(candidate):
+                job_dir = candidate
+                break
+    os.makedirs(job_dir)
     local_quelle = os.path.join(job_dir, "quelle")
     local_ziel = os.path.join(job_dir, "ziel")
 
