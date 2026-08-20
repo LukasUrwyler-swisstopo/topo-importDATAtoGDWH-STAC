@@ -17,6 +17,7 @@ SCRIPT_1    = os.path.join(SCRIPT_DIR, "1_allGDS_upload_GDWH_withCHECKxml.py")
 SCRIPT_21   = os.path.join(SCRIPT_DIR, "2_1_SB_DOP_16_FOLDERorganize_by_lineID.py")
 SCRIPT_22   = os.path.join(SCRIPT_DIR, "2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py")
 SCRIPT_3    = os.path.join(SCRIPT_DIR, "3_fix_false_nodata_dop.py")
+SCRIPT_4    = os.path.join(SCRIPT_DIR, "4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py")
 RUNNER_SCRIPT = os.path.join(SCRIPT_DIR, "_osgeo_runner.py")
 SCRIPT_PREVIEW = os.path.join(SCRIPT_DIR, "_tif_preview_reader.py")
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "_gdwh_config.json")
@@ -585,18 +586,8 @@ class SicherheitsCheckDialog(tk.Toplevel):
                      wraplength=560, justify="left").pack(anchor="w")
         _kv(sec1, "TerrainModel:", meta.get("TerrainModel", ""))
         if gds == "SB_DSM_PUNKTWOLKE":
-            _kv(sec1, "CRS-Tag LAZ setzen:",
-                "Ja" if meta.get("TagCrsLaz") else "Nein")
-            crs_hint_row = tk.Frame(sec1, bg=T["root"])
-            crs_hint_row.pack(fill="x", pady=(0, 3))
-            tk.Label(crs_hint_row,
-                     text="Hinweis: Nur noetig, falls die LAZ-Quelltiles kein CRS im Header "
-                          "haben (langsam - jede Kachel wird komplett neu geschrieben). "
-                          "Deaktiviert = deutlich schneller, aber Tiles ohne CRS bleiben dann "
-                          "ungetaggt.",
-                     font=("Segoe UI", 8, "italic"),
-                     bg=T["root"], fg=T["fg_dim"], anchor="nw",
-                     wraplength=560, justify="left").pack(anchor="w")
+            _kv(sec1, "LAS 1.2 -> 1.4 Vorkonversion:",
+                "immer aktiv (CRS-Tag EPSG:2056+5728 wird byte-exakt gesetzt, siehe Log)")
         _kv(sec1, "CameraSystem:", meta.get("CameraSystem", ""))
 
         # Pfade
@@ -1346,27 +1337,10 @@ class GDWHApp(tk.Tk):
                       ).grid(row=r, column=1, sticky="ew", padx=(8, 0), pady=3)
         r += 1
 
-        # CRS-Tagging LAZ – nur SB_DSM_PUNKTWOLKE: setzt per PDAL ein
-        # CRS-Tag (EPSG:2056+5728) auf LAZ-Tiles ohne CRS im Header (keine
-        # Reprojektion, siehe tag_crs_on_laz in Script 1). Dieser Schritt
-        # liest/schreibt jede Punktwolken-Kachel vollstaendig neu und ist
-        # bei vielen/grossen Tiles der langsamste Teil des Imports - deshalb
-        # standardmaessig deaktiviert und nur bei Bedarf (Quelltiles ohne
-        # CRS im Header) einzuschalten.
-        self.tag_crs_var = tk.BooleanVar(value=False)
-        self.tag_crs_cb = ttk.Checkbutton(
-            sec, variable=self.tag_crs_var,
-            text="CRS-Tag setzen (EPSG:2056+5728) auf LAZ ohne CRS im Header")
-        self.tag_crs_cb.grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
-        self.tag_crs_hint = ttk.Label(
-            sec, font=("", 8), justify="left", wraplength=560,
-            text="Nur noetig, falls die LAZ-Quelltiles kein CRS im Header haben "
-                 "(langsam - jede Kachel wird komplett neu geschrieben). "
-                 "Deaktiviert = deutlich schneller, aber Tiles ohne CRS bleiben "
-                 "dann ungetaggt.")
-        self.tag_crs_hint.grid(row=r + 1, column=1, sticky="w", padx=(8, 0))
-        self._dim_labels.append(self.tag_crs_hint)
-        r += 2
+        # CRS-Tagging LAZ (SB_DSM_PUNKTWOLKE) gibt es hier nicht mehr als
+        # Option - die LAS 1.2 -> LAS 1.4 Vorkonversion (Script 4) laeuft
+        # jetzt immer automatisch vor Script 1 (siehe _osgeo_runner.py) und
+        # setzt das CRS dabei byte-exakt, kein Checkbox-Entscheid mehr noetig.
 
         # SourceReferenceSystem (unveränderlich)
         ttk.Label(sec, text="SourceRefSys:", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
@@ -1762,16 +1736,6 @@ class GDWHApp(tk.Tk):
             # _update_fix_nodata_visibility().
             self._update_fix_nodata_visibility()
 
-        # CRS-Tagging LAZ: nur relevant fuer SB_DSM_PUNKTWOLKE
-        if hasattr(self, "tag_crs_cb"):
-            if gds == "SB_DSM_PUNKTWOLKE":
-                self.tag_crs_cb.grid()
-                self.tag_crs_hint.grid()
-            else:
-                self.tag_crs_cb.grid_remove()
-                self.tag_crs_hint.grid_remove()
-                self.tag_crs_var.set(False)
-
         # INPUT_FOLDER (SB_DOP_16) vs. Data-Input Path (andere GDS)
         self.if_frame.grid()         if is_d16 else self.if_frame.grid_remove()
         self.quelle_frame.grid_remove() if is_d16 else self.quelle_frame.grid()
@@ -2097,8 +2061,6 @@ class GDWHApp(tk.Tk):
             meta["NoData"] = self._get_nodata()
         if gds == "SB_DOP":
             meta["FixFalseNodata"] = bool(self.fix_nodata_var.get())
-        if gds == "SB_DSM_PUNKTWOLKE":
-            meta["TagCrsLaz"] = bool(self.tag_crs_var.get())
         # Area-Override nur uebernehmen, wenn das Feld einen echten Wert enthaelt
         # (kein Platzhalter wie "—  (Ordner nicht gefunden)") - sonst leitet
         # jedes Sub-Script den Area-Namen wie bisher selbst pro Datei ab.
@@ -2485,6 +2447,7 @@ class GDWHApp(tk.Tk):
             "script_1":         SCRIPT_1,
             "script_22":        SCRIPT_22,
             "script_3":         SCRIPT_3,
+            "script_4":         SCRIPT_4,
             "fix_false_nodata": bool(meta.get("FixFalseNodata")),
             "staging_dir":      self._staging_dir,
         }

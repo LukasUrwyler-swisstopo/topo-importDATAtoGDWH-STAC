@@ -10,6 +10,7 @@ import json
 import shutil
 import builtins
 import importlib.util
+import tempfile
 import traceback
 
 # preview_xml_attributes-Bestätigung automatisch mit Y beantworten
@@ -177,6 +178,48 @@ def _cleanup_staging(job_dir):
         print(f"[WARNUNG] Staging-Ordner konnte nicht vollstaendig entfernt werden: {job_dir} ({e})", flush=True)
 
 
+# ---------------------------------------------------------------------------
+# SB_DSM_PUNKTWOLKE: LAS 1.2 -> LAS 1.4 Vorkonversion (Script 4)
+# ---------------------------------------------------------------------------
+# Laeuft IMMER vor Script 1, wenn GDS == "SB_DSM_PUNKTWOLKE" (siehe main()) -
+# keine GUI-Checkbox mehr dafuer, siehe 4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py.
+# Quelle (quelle_dir, i.d.R. bereits die lokal gestagte Kopie aus proc_quelle)
+# wird NIE veraendert - die konvertierten Tiles landen in einem eigenen,
+# temporaeren Scratch-Ordner, dessen Pfad als neue proc_quelle fuer Script 1
+# weiterverwendet wird.
+
+def _convert_punktwolke_las14(script4_path, quelle_dir, staging_root_dir):
+    """Fuehrt die LAS 1.2 -> LAS 1.4 Batch-Vorkonversion aus (siehe
+    convert_folder() in Script 4). Bricht den ganzen Lauf per Exception ab,
+    wenn auch nur eine Kachel fehlschlaegt - eine nicht korrekt konvertierte
+    Punktwolke soll nicht unbemerkt weiter nach GDWH gelangen.
+
+    Der Scratch-Ordner fuer die konvertierten Tiles liegt innerhalb
+    staging_root_dir (i.d.R. job_dir - selbe schnelle lokale Platte wie die
+    gestagte Quelle), falls vorhanden, sonst im System-Temp.
+
+    Gibt den Pfad zum Scratch-Ordner zurueck (muss vom Aufrufer nach
+    Gebrauch aufgeraeumt werden, siehe _cleanup_staging-Analogie in main()).
+    """
+    mod4 = _lade_modul("script_4", script4_path)
+    scratch_dir = tempfile.mkdtemp(prefix="SB_DSM_PUNKTWOLKE_LAS14_", dir=(staging_root_dir or None))
+
+    print("\n=== LAS 1.2 -> LAS 1.4 Vorkonversion (Script 4) ===\n", flush=True)
+    summary = mod4.convert_folder(quelle_dir, scratch_dir, recursive=False,
+                                   target_scale=0.01, dry_run=False)
+    print(f"\nLAS14-Vorkonversion: {summary['total']} verarbeitet, {summary['ok']} gueltig, "
+          f"{summary['warning']} mit Warnung, {summary['skipped']} bereits migriert, "
+          f"{summary['failed']} fehlgeschlagen\n", flush=True)
+
+    if summary["failed"] > 0:
+        raise RuntimeError(
+            f"LAS 1.2 -> LAS 1.4 Vorkonversion fehlgeschlagen fuer {summary['failed']} "
+            f"Datei(en) (siehe Log oben) - Import abgebrochen."
+        )
+
+    return scratch_dir
+
+
 def main():
     if len(sys.argv) < 2:
         print("[FEHLER] Kein Konfigurationspfad übergeben.", flush=True)
@@ -200,6 +243,7 @@ def main():
     proc_quelle, proc_ziel = quelle, ziel
     job_dir = None
     staged = False
+    punktwolke_scratch_dir = None
 
     if staging_root and ziel and os.path.isdir(os.path.splitdrive(staging_root)[0] + "\\"):
         try:
@@ -214,6 +258,15 @@ def main():
     exit_code = 0
     try:
         if action == "standard":
+            # SB_DSM_PUNKTWOLKE: LAS 1.2 -> LAS 1.4 Vorkonversion (Script 4)
+            # laeuft IMMER zuerst, bevor Script 1 auch nur die Sicherheits-
+            # vorschau sieht - proc_quelle wird danach auf den Scratch-Ordner
+            # mit den konvertierten Tiles umgebogen.
+            if gds == "SB_DSM_PUNKTWOLKE":
+                punktwolke_scratch_dir = _convert_punktwolke_las14(
+                    cfg["script_4"], proc_quelle, job_dir)
+                proc_quelle = punktwolke_scratch_dir
+
             # Script 1 (SB_DOP / SB_DSM / SB_DSM_PUNKTWOLKE)
             mod = _lade_modul("script_1", cfg["script_1"])
             print("=== Sicherheitsvorschau ===", flush=True)
@@ -278,6 +331,13 @@ def main():
 
     if staged:
         _cleanup_staging(job_dir)
+
+    # Scratch-Ordner der LAS14-Vorkonversion ist reine Arbeitskopie (nie die
+    # einzige vollstaendige Version von irgendwas) - immer aufraeumen, auch
+    # bei Fehlern. ignore_errors=True: liegt er innerhalb von job_dir, wurde
+    # er ggf. bereits durch _cleanup_staging() oben entfernt.
+    if punktwolke_scratch_dir:
+        shutil.rmtree(punktwolke_scratch_dir, ignore_errors=True)
 
     sys.exit(exit_code)
 
