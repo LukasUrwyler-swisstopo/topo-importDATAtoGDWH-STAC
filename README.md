@@ -25,7 +25,8 @@ Alle Angaben (GDS, Pfade, Meta-Informationen) werden direkt im GUI ausgefüllt �
 - **XML-Metadaten** pro Datei generieren
 - **NoData-Tag & Maske** im TIFF setzen
 - **Daten ins GDWH-Bucket kopieren** inkl. `files.csv` (Hash, TileKey, Footprint)
-- Optionale Zusatzfunktionen (siehe unten): falsche NoData-Pixel korrigieren, CRS auf LAZ-Tiles setzen
+- Optionale Zusatzfunktion (siehe unten): falsche NoData-Pixel korrigieren
+- Bei `SB_DSM_PUNKTWOLKE` läuft vor dem Import automatisch eine LAS 1.2 → 1.4 Vorkonversion (CRS-Tag wird dabei byte-exakt gesetzt)
 
 Nach dem GDWH-Import erfolgt der **STAC-Import automatisch**.
 
@@ -53,6 +54,7 @@ Nach dem GDWH-Import erfolgt der **STAC-Import automatisch**.
 4. Quell- und Zielpfad eingeben
 5. Sicherheitscheck bestätigen  (Kontrollfragen)
 6. Import starten
+   → (nur SB_DSM_PUNKTWOLKE: LAS 1.2 → 1.4 Vorkonversion, automatisch)
    → Quellordner bereinigen
    → XML generieren
    → NoData-Tag & Maske setzen
@@ -86,8 +88,8 @@ Der **Import-Button** bleibt gesperrt, bis alle Pflichtfelder ausgefüllt sind.
 **Falsche NoData-Pixel korrigieren** *(nur SB_DOP, Checkbox, standardmässig aktiv)*
 Vereinzelte Pixel/kleine Gruppen, die zufällig dem NoData-Wert entsprechen (z.B. dunkle Schatten, überstrahlte Flächen), aber eigentlich gültige Nutzdaten sind, werden vor dem Import erkannt und korrigiert, damit sie nicht fälschlich als NoData maskiert werden.
 
-**CRS-Tag auf LAZ-Tiles setzen** *(nur SB_DSM_PUNKTWOLKE, Checkbox, standardmässig aus)*
-Setzt bei Bedarf das fehlende CRS (`EPSG:2056+5728`) als Metadaten-Tag auf den LAZ-Kacheln – reine Metadaten-Ergänzung, keine Reprojektion. Nur aktivieren, wenn die Quelltiles tatsächlich kein CRS im Header haben (verlangsamt den Import spürbar).
+**LAS 1.2 → 1.4 Vorkonversion** *(nur SB_DSM_PUNKTWOLKE, immer aktiv, keine Checkbox)*
+Hebt die photogrammetrisch abgeleiteten DSM-Punktwolken-Tiles (LAZ) von LAS 1.2/PF1 ohne CRS-Angabe auf LAS 1.4/PF6 an, damit sie strukturell kongruent zu swissSURFACE3D sind. Das CRS (`EPSG:2056+5728`) wird dabei byte-exakt aus einer verifizierten Referenzkachel injiziert (keine Reprojektion, keine Neuberechnung des WKT). Läuft automatisch vor dem eigentlichen Import auf einer Arbeitskopie; Quelltiles bleiben unverändert. Details siehe [4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py](4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py).
 
 **Lokales Staging** *(Performance, Feld „Lokaler Temp-Ordner“)*
 Bei grossen Lieferungen über ein Netzlaufwerk kann ein lokaler Zwischenordner angegeben werden – reduziert die Anzahl Netzwerktransfers pro Tile deutlich.
@@ -98,7 +100,7 @@ Bei grossen Lieferungen über ein Netzlaufwerk kann ein lokaler Zwischenordner a
 
 - **Normales Python 3.x** zum Starten der GUI (kein OSGeo4W-Start nötig)
   - Die GUI findet den OSGeo4W-Python-Pfad automatisch, alternativ Button **Ändern…**
-- **PDAL-CLI**, nur für `SB_DSM_PUNKTWOLKE` (CRS-Zuweisung)
+- **PDAL-CLI**, nur für `SB_DSM_PUNKTWOLKE` (LAS 1.2 → 1.4 Vorkonversion, läuft automatisch)
 - Netzwerkzugriff auf das GDWH-Bucket
 - Korrektes Dateinamen-Format (siehe Tabelle oben) – zwingend für die XML-Generierung
 
@@ -147,6 +149,7 @@ Prüft die reinen Python-Funktionen ohne OSGeo4W/GDAL-Abhängigkeit (Mock).
 | `2_1_SB_DOP_16_FOLDERorganize_by_lineID.py` | Sortiert 16BIT-DOP-Dateien nach LineID | (direkt möglich, Pfad anpassen) |
 | `2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py` | Sub-Script für `SB_DOP_16` | (direkt möglich, Working Part anpassen) |
 | `3_fix_false_nodata_dop.py` | Optionale NoData-Vorkorrektur (SB_DOP), läuft in-place vor Script 1 | ✓ (eigenständiges CLI, siehe Docstring) |
+| `4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py` | LAS 1.2 → 1.4 Vorkonversion (SB_DSM_PUNKTWOLKE), läuft immer automatisch vor Script 1, schreibt auf Arbeitskopie | ✓ (eigenständiges CLI, siehe Docstring) |
 | `_osgeo_runner.py` | Interner Subprocess-Runner (OSGeo4W Python) | – |
 | `test_functions.py` | Unit-Tests | ✓ |
 
@@ -173,6 +176,7 @@ Korrekturwerte sind fix im Skript hinterlegt (keine GUI-/CLI-Parameter): falsche
 - SB_DSM DSM-Raster (nicht Hillshade) erhält nur den NoData-Tag, keine interne Maske – bei Hillshade bleibt die Maske aktiv.
 - Die Maske wird immer erst vollständig im Speicher berechnet und erst bei Erfolg geschrieben (Fail-Safe gegen halbfertige Masken).
 - Ist bei `SB_DOP` mit NoData `0 0 0` bereits eine interne Maske vorhanden (z.B. fortgesetzter Lauf), wird die Neuberechnung übersprungen.
+- `SB_DSM_PUNKTWOLKE`: Das CRS wird NICHT über PDALs `a_srs` oder `las2las -epsg` gesetzt, sondern als zwei VLRs (GeoTIFF-KeyDirectory 34735 + OGC-WKT 2112) byte-exakt aus einer verifizierten swissSURFACE3D-Referenzkachel injiziert – beide genannten Standardwege lieferten in Tests einen abweichenden bzw. fachlich falschen WKT (siehe Docstring von `4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py`). Die Kachelkoordinaten (Offset) werden deterministisch aus dem Dateinamen geparst, nicht aus dem Datenminimum.
 
 **Netzwerk-I/O:** `copy_with_retry_md5()` berechnet die MD5-Prüfsumme im selben Lese-/Schreibdurchgang wie das Kopieren, statt die Datei separat erneut einzulesen.
 
