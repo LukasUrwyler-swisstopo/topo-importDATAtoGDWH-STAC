@@ -8,10 +8,11 @@ Ein GUI-Tool, das den kompletten Ablauf von der Datenvorbereitung bis zum STAC-I
 
 ```
 **cmd (Terminal) starten** (Win-Taste + eingabe "cmd"):
-...>python 0_main_GDWH_import_GUI.py
+...>python ...pfad/0_main_GDWH_import_GUI.py
 ```
 
-<img width="452" height="617" alt="GUI" src="https://github.com/user-attachments/assets/1153f60c-7824-451e-a4dd-6f8c2e023e9b" />
+<img width="449" height="574" alt="image" src="https://github.com/user-attachments/assets/868812f2-df3e-41be-b749-c3a669a50186" />
+
 
 Alle Angaben (GDS, Pfade, Meta-Informationen) werden direkt im GUI ausgefüllt – kein manuelles Bearbeiten der Scripts nötig.
 
