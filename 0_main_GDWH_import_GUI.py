@@ -1091,6 +1091,7 @@ class GDWHApp(tk.Tk):
         self._log_file        = None
         self._pending_archive = None
         self._pending_ziel     = None
+        self._error_lines     = []
         self._log_visible     = False
         self.gds_var        = tk.StringVar(value="SB_DOP")
         self._dim_labels    = []   # Labels mit fg_dim (grau)
@@ -2071,6 +2072,10 @@ class GDWHApp(tk.Tk):
 
     # ── Log ───────────────────────────────────────────────────────────────────
     def _log(self, text):
+        for zeile in text.splitlines():
+            z = zeile.strip()
+            if z.startswith("[FEHLER]") or z.startswith("[ABBRUCH"):
+                self._error_lines.append(z)
         self.log_box.config(state="normal")
         self.log_box.insert("end", text)
         self.log_box.see("end")
@@ -2179,6 +2184,16 @@ class GDWHApp(tk.Tk):
             self._pending_archive = None
             self._pending_ziel    = None
             self._log("\n✗  Import fehlgeschlagen oder abgebrochen.\n")
+            detail = "\n".join(dict.fromkeys(self._error_lines))  # Duplikate raus, Reihenfolge erhalten
+            if not detail:
+                detail = "Kein detaillierter Fehlertext verfuegbar - siehe Terminal-Log."
+            if len(detail) > 1500:
+                detail = detail[:1500] + " […]"
+            messagebox.showerror(
+                "Import fehlgeschlagen",
+                f"Der Import wurde mit einem Fehler abgebrochen:\n\n{detail}\n\n"
+                f"Details siehe Terminal-Log unten.",
+            )
         if self._log_file:
             try:
                 self._log_file.close()
@@ -2375,6 +2390,7 @@ class GDWHApp(tk.Tk):
         self._progress_frame.pack(fill="x", padx=12, pady=(0, 4), before=self._btn_row)
         self._progress_bar.start(10)
         self._clear_log()
+        self._error_lines = []
 
         # Logdatei öffnen (logs-Ordner neben diesem Script)
         # Name: GDWHimport_{GDS}_{AREA}_{Line_ID}_{YYYYmmdd_HHMMSS}.log
