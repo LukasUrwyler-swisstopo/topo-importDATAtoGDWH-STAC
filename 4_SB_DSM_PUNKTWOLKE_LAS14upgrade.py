@@ -55,6 +55,11 @@ Verwendung:
   Batch, rekursiv (alle Unterordner nach .laz durchsuchen):
     python 4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py --input-dir Q:\...\input --output-dir Q:\...\output --recursive
 
+  Kacheln werden standardmaessig parallel verarbeitet (siehe
+  _default_worker_count: Kernanzahl - 2, max. 8). Fuer seriellen Ablauf
+  (z.B. Debugging) explizit --workers 1 setzen, fuer eine andere Anzahl
+  z.B. --workers 4.
+
 Benoetigt: pdal.exe im PATH oder im selben bin-Ordner wie der aktuelle
 Python-Interpreter (OSGeo4W/QGIS-Python-Umgebung, siehe _find_pdal_exe).
 Keine PDAL-Python-Bindings, kein pyproj - die CRS-Aufloesung fuer die
@@ -72,6 +77,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 # ****************************** Log-Funktion ******************************
@@ -127,16 +133,40 @@ REFERENCE_VLR_2112_B64 = (
 
 
 # ****************************** PDAL-Hilfsfunktionen ******************************
+_pdal_exe_cache = None  # einmal ermittelt, dann wiederverwendet (siehe _find_pdal_exe)
+
+
 def _find_pdal_exe():
     """Ermittelt den Pfad zur pdal.exe (PATH bevorzugt, sonst gleicher
-    bin-Ordner wie der aktuelle Python-Interpreter - OSGeo4W/QGIS-Python)."""
+    bin-Ordner wie der aktuelle Python-Interpreter - OSGeo4W/QGIS-Python).
+
+    Das Ergebnis wird im Modul zwischengespeichert: 'shutil.which' durchsucht
+    bei jedem Aufruf den kompletten PATH neu, was bei mehreren hundert Kacheln
+    (mehrere PDAL-Aufrufe pro Kachel) unnoetig oft wiederholt wuerde. Der
+    Pfad zur pdal.exe aendert sich waehrend eines Laufs nicht.
+    Race-sicher genug fuer parallele Threads (siehe convert_folder):
+    im schlimmsten Fall wird 'shutil.which' von zwei Threads gleichzeitig
+    einmal zu viel ausgefuehrt, das Ergebnis ist aber deterministisch gleich.
+    """
+    global _pdal_exe_cache
+    if _pdal_exe_cache is not None:
+        return _pdal_exe_cache
     exe = shutil.which("pdal")
-    if exe:
-        return exe
-    candidate = os.path.join(os.path.dirname(sys.executable), "pdal.exe")
-    if os.path.isfile(candidate):
-        return candidate
-    return "pdal"
+    if not exe:
+        candidate = os.path.join(os.path.dirname(sys.executable), "pdal.exe")
+        exe = candidate if os.path.isfile(candidate) else "pdal"
+    _pdal_exe_cache = exe
+    return exe
+
+
+def _default_worker_count():
+    """Anzahl paralleler PDAL-Worker (siehe convert_folder): reserviert 2 Kerne
+    fuer OS/GUI/andere Prozesse, nutzt den Rest bis maximal 8 - auf den
+    ueblichen 8-Kern-Zielmaschinen also 6, auf staerkeren Maschinen bis zu 8.
+    os.cpu_count() kann in seltenen Faellen None liefern (Kernanzahl nicht
+    bestimmbar) - dann konservativ 4 als Annahme."""
+    cpu = os.cpu_count() or 4
+    return max(1, min(cpu - 2, 8))
 
 
 def pdal_metadata(file_path):
@@ -163,22 +193,57 @@ def pdal_classification_range(file_path):
     return None, None
 
 
-def run_pdal_pipeline(pipeline_dict):
+def classification_range_from_pipeline_metadata(pipeline_metadata):
+    """Liest Minimum/Maximum von 'Classification' aus der Metadata einer
+    'pdal pipeline --metadata ...'-Ausfuehrung, deren Pipeline eine
+    'filters.stats(dimensions=Classification)'-Stage enthaelt (siehe
+    convert_tile). Struktur empirisch verifiziert (PDAL 2.10.0): identisch
+    zu 'pdal info --dimensions Classification --stats', nur unter
+    metadata["stages"]["filters.stats"] statt metadata["stats"] verschachtelt.
+    Gibt (None, None) zurueck, falls die Stage/Dimension fehlt - der Aufrufer
+    faellt dann auf einen regulaeren 'pdal info'-Aufruf zurueck."""
+    stats = ((pipeline_metadata or {}).get("stages") or {}).get("filters.stats") or {}
+    for stat in stats.get("statistic", []):
+        if stat.get("name") == "Classification":
+            return stat.get("minimum"), stat.get("maximum")
+    return None, None
+
+
+def run_pdal_pipeline(pipeline_dict, capture_metadata=False):
     """Schreibt pipeline_dict in eine temporaere JSON-Datei und fuehrt sie via
-    'pdal pipeline' aus. Wirft CalledProcessError mit stderr bei Fehlern."""
+    'pdal pipeline' aus. Wirft CalledProcessError mit stderr bei Fehlern.
+
+    Bei capture_metadata=True wird zusaetzlich '--metadata <tmp>.json'
+    uebergeben und die geparste Pipeline-Metadata als Dict zurueckgegeben
+    (sonst None). Damit lassen sich z.B. Ergebnisse einer angehaengten
+    'filters.stats'-Stage OHNE einen separaten 'pdal info'-Aufruf (= ohne
+    einen weiteren vollstaendigen Lese-/Dekompressionsdurchlauf durch die
+    Datei) auslesen, siehe convert_tile."""
     fd, pipeline_path = tempfile.mkstemp(suffix=".json")
+    metadata_path = None
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(pipeline_dict, f)
-        subprocess.run(
-            [_find_pdal_exe(), "pipeline", pipeline_path],
-            capture_output=True, text=True, check=True,
-        )
+        cmd = [_find_pdal_exe(), "pipeline", pipeline_path]
+        if capture_metadata:
+            meta_fd, metadata_path = tempfile.mkstemp(suffix=".json")
+            os.close(meta_fd)
+            cmd += ["--metadata", metadata_path]
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if capture_metadata:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return None
     finally:
         try:
             os.remove(pipeline_path)
         except Exception:
             pass
+        if metadata_path:
+            try:
+                os.remove(metadata_path)
+            except Exception:
+                pass
 
 
 # ****************************** Kachelname / Plausibilitaet ******************************
@@ -452,12 +517,22 @@ def validate_target(src_metadata, dst_metadata):
     return problems
 
 
-def validate_classification_unchanged(src_path, dst_path):
+def validate_classification_unchanged(src_range, dst_path):
     """Vergleicht Minimum/Maximum der Classification-Dimension zwischen
-    Quelle und Ziel. Gibt eine Liste von Fehler-Strings zurueck (leer = OK)."""
+    Quelle und Ziel. Gibt eine Liste von Fehler-Strings zurueck (leer = OK).
+
+    src_range = (minimum, maximum) der QUELLE, i.d.R. bereits waehrend der
+    Konversions-Pipeline mitgemessen (siehe convert_tile /
+    classification_range_from_pipeline_metadata) - dafuer wird die Quelle
+    NICHT nochmal separat eingelesen. Fuer das ZIEL ist ein eigener
+    'pdal info'-Aufruf unvermeidbar: erst er bestaetigt, was nach der
+    LAS1.2(PF1)->LAS1.4(PF6)-Punktformat-Umwandlung tatsaechlich auf der
+    Platte steht (PF1 packt Classification als 5-Bit-Wert zusammen mit
+    Flag-Bits in ein Byte, PF6 trennt beides - das ist die Stelle, an der ein
+    Konversionsfehler die Klasse tatsaechlich veraendern koennte)."""
     problems = []
+    src_min, src_max = src_range
     try:
-        src_min, src_max = pdal_classification_range(src_path)
         dst_min, dst_max = pdal_classification_range(dst_path)
     except Exception as e:
         return [f"Classification-Pruefung fehlgeschlagen: {e}"]
@@ -509,7 +584,11 @@ def convert_tile(src_path, dst_dir, target_scale=0.01, dry_run=False):
         )
 
     if is_already_migrated(src_meta):
-        log(f"{name}: bereits LAS 1.4/PF6 mit korrektem CRS - wird unveraendert kopiert.")
+        # KEIN direkter log()-Aufruf hier (anders als frueher): convert_tile
+        # laeuft unter workers>1 parallel in mehreren Threads (siehe
+        # convert_folder), log() soll aber ausschliesslich seriell aus dem
+        # Haupt-Thread heraus passieren (siehe _log_tile_result) - deshalb
+        # nur im Status vermerkt, die Meldung wird dort ausgegeben.
         if not dry_run:
             os.makedirs(dst_dir, exist_ok=True)
             shutil.copy2(src_path, dst_path)
@@ -548,17 +627,35 @@ def convert_tile(src_path, dst_dir, target_scale=0.01, dry_run=False):
         if compression:
             writer_opts["compression"] = compression
 
+        # 'filters.stats' auf Classification haengt sich als reiner
+        # Durchlauf-Filter (veraendert keine Punkte) an den ohnehin
+        # noetigen Lesedurchlauf der Quelle an - liefert deren
+        # Classification-Min/Max praktisch gratis mit, ohne die Quelle
+        # dafuer ein zweites Mal komplett einzulesen (empirisch mit PDAL
+        # 2.10.0 verifiziert, siehe classification_range_from_pipeline_metadata).
         pipeline = {"pipeline": [
             {"type": "readers.las", "filename": src_path},
+            {"type": "filters.stats", "dimensions": "Classification"},
             writer_opts,
         ]}
-        run_pdal_pipeline(pipeline)
+        pipeline_meta = run_pdal_pipeline(pipeline, capture_metadata=True)
+
+        src_class_range = classification_range_from_pipeline_metadata(pipeline_meta)
+        if src_class_range == (None, None):
+            # Fallback, falls die Stage/Metadata unerwartet fehlt (z.B.
+            # aeltere PDAL-Version) - dann wie zuvor ein separater Aufruf,
+            # damit die Pruefung nie stillschweigend uebersprungen wird.
+            try:
+                src_class_range = pdal_classification_range(src_path)
+            except Exception as e:
+                result["error"] = f"Classification-Ermittlung (Quelle) fehlgeschlagen: {e}"
+                return result
 
         inject_reference_vlrs(tmp_path)
 
         dst_meta = pdal_metadata(tmp_path)
         problems = validate_target(src_meta, dst_meta)
-        problems.extend(validate_classification_unchanged(src_path, tmp_path))
+        problems.extend(validate_classification_unchanged(src_class_range, tmp_path))
 
         if problems:
             result["error"] = "; ".join(problems)
@@ -597,7 +694,32 @@ def find_laz_files(input_dir, recursive):
                 yield full
 
 
-def convert_folder(input_dir, output_dir, recursive=False, target_scale=0.01, dry_run=False):
+def _log_tile_result(name, result, summary):
+    """Loggt das Ergebnis einer einzelnen Kachel und aktualisiert summary
+    in-place. IMMER nur aus dem Haupt-Thread aufrufen (siehe convert_folder) -
+    dadurch bleibt das Logging trotz paralleler Worker sauber seriell,
+    ohne dass log() selbst thread-sicher gemacht werden muss."""
+    log(f"\n[{name}]")
+    for w in result["warnings"]:
+        log(f"  [WARNUNG] {w}")
+
+    if result["status"] == "skipped_already_migrated":
+        log(f"  bereits LAS 1.4/PF6 mit korrektem CRS - wird unveraendert kopiert.")
+        summary["skipped"] += 1
+    elif result["status"] == "ok":
+        log(f"  OK")
+        summary["ok"] += 1
+    elif result["status"] == "warning":
+        log(f"  OK (mit Warnung)")
+        summary["warning"] += 1
+    else:
+        log(f"  FEHLER: {result['error']}")
+        summary["failed"] += 1
+        summary["failed_files"].append((name, result["error"]))
+
+
+def convert_folder(input_dir, output_dir, recursive=False, target_scale=0.01,
+                    dry_run=False, workers=None):
     """Batch-Konversion aller .laz-Dateien in input_dir - wiederverwendbare
     Kernfunktion, sowohl fuer die CLI (main(), siehe unten) als auch fuer den
     Aufruf als Modul (siehe _osgeo_runner.py: laeuft dort IMMER automatisch
@@ -607,6 +729,22 @@ def convert_folder(input_dir, output_dir, recursive=False, target_scale=0.01, dr
     wirft KEINE Exception - der Aufrufer entscheidet anhand von
     summary['failed'], wie er reagiert.
 
+    workers steuert die Anzahl gleichzeitig verarbeiteter Kacheln (Default
+    None -> automatisch via _default_worker_count(), siehe dort). Die Kacheln
+    sind voneinander unabhaengig (eigene Quelldatei, eigene Zieldatei, kein
+    gemeinsamer Zustand), daher per ThreadPoolExecutor parallelisiert - NICHT
+    per ProcessPoolExecutor/multiprocessing: dieses Modul wird von
+    _osgeo_runner.py per importlib.util.spec_from_file_location dynamisch
+    unter einem generischen Namen ('script_4') geladen und dabei bewusst
+    NICHT in sys.modules eingetragen; multiprocessing muesste auf Windows
+    (spawn-Methode) genau diesen Modulnamen in einem frischen Interpreter
+    reimportieren koennen, um convert_tile zurueckzuholen, was in diesem
+    Ladeszenario fehlschlaegt. Mit Threads entfaellt das Problem, da die
+    eigentliche CPU-Arbeit ohnehin in den PDAL-Subprozessen steckt: jeder
+    'subprocess.run'-Aufruf gibt den GIL waehrend des Wartens frei, wodurch
+    mehrere pdal.exe-Prozesse echt parallel auf mehreren Kernen laufen
+    koennen, ganz ohne das Pickling-/Modul-Identitaetsproblem.
+
     Gibt ein Zusammenfassungs-Dict zurueck:
       {"total", "ok", "warning", "skipped", "failed",
        "failed_files": [(name, error), ...]}
@@ -615,26 +753,35 @@ def convert_folder(input_dir, output_dir, recursive=False, target_scale=0.01, dr
     summary = {"total": len(files), "ok": 0, "warning": 0, "skipped": 0,
                "failed": 0, "failed_files": []}
 
-    for src_path in files:
-        name = os.path.basename(src_path)
-        log(f"\n[{name}]")
-        result = convert_tile(src_path, output_dir, target_scale=target_scale, dry_run=dry_run)
+    if not files:
+        return summary
 
-        for w in result["warnings"]:
-            log(f"  [WARNUNG] {w}")
+    if workers is None:
+        workers = _default_worker_count()
+    workers = max(1, min(workers, len(files)))
 
-        if result["status"] == "skipped_already_migrated":
-            summary["skipped"] += 1
-        elif result["status"] == "ok":
-            log(f"  OK")
-            summary["ok"] += 1
-        elif result["status"] == "warning":
-            log(f"  OK (mit Warnung)")
-            summary["warning"] += 1
-        else:
-            log(f"  FEHLER: {result['error']}")
-            summary["failed"] += 1
-            summary["failed_files"].append((name, result["error"]))
+    if workers <= 1:
+        for src_path in files:
+            name = os.path.basename(src_path)
+            result = convert_tile(src_path, output_dir, target_scale=target_scale, dry_run=dry_run)
+            _log_tile_result(name, result, summary)
+    else:
+        log(f"Parallelisierung: {workers} gleichzeitige PDAL-Worker "
+            f"(verfuegbare Kerne: {os.cpu_count()}).")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_name = {
+                executor.submit(convert_tile, src_path, output_dir,
+                                 target_scale, dry_run): os.path.basename(src_path)
+                for src_path in files
+            }
+            for future in as_completed(future_to_name):
+                name = future_to_name[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = {"status": "failed", "warnings": [],
+                              "error": f"Unerwarteter Fehler im Worker: {e}"}
+                _log_tile_result(name, result, summary)
 
     log(f"\n=== Zusammenfassung: {summary['total']} verarbeitet, "
         f"{summary['ok']} gueltig, {summary['warning']} mit Warnung, "
@@ -661,7 +808,14 @@ def main():
                          help="Ziel-Scale in Metern (Default 0.01 = 1 cm, verlustbehaftete Rundung "
                               "gegenueber der Quelle mit Scale 0.001, siehe Modul-Docstring)")
     parser.add_argument("--log-file", help="Pfad fuer die Log-Datei (Default: <output-dir>/logs/...)")
+    parser.add_argument("--workers", type=int, default=None,
+                         help="Anzahl gleichzeitig verarbeiteter Kacheln (Default: automatisch, "
+                              "siehe _default_worker_count - reserviert 2 Kerne, max. 8). "
+                              "--workers 1 erzwingt seriellen Ablauf.")
     args = parser.parse_args()
+
+    if args.workers is not None and args.workers < 1:
+        parser.error("--workers muss >= 1 sein.")
 
     if os.path.abspath(args.input_dir) == os.path.abspath(args.output_dir):
         parser.error("--output-dir ist identisch mit --input-dir - Original darf nicht ueberschrieben werden.")
@@ -683,14 +837,16 @@ def main():
     log(f"Input:  {args.input_dir}  (rekursiv: {args.recursive})")
     log(f"Output: {args.output_dir}")
     log(f"Ziel-Scale: {args.target_scale} m  (Quelle: 0.001 m - verlustbehaftete Rundung, siehe Docstring)")
-    log(f"Dry-Run: {args.dry_run}\n")
+    log(f"Dry-Run: {args.dry_run}")
+    log(f"Worker: {args.workers if args.workers else f'automatisch ({_default_worker_count()} von {os.cpu_count()} Kernen)'}\n")
 
     if not list(find_laz_files(args.input_dir, args.recursive)):
         log(f"Keine .laz Dateien in {args.input_dir} gefunden.")
         sys.exit(1)
 
     summary = convert_folder(args.input_dir, args.output_dir, recursive=args.recursive,
-                              target_scale=args.target_scale, dry_run=args.dry_run)
+                              target_scale=args.target_scale, dry_run=args.dry_run,
+                              workers=args.workers)
 
     if _log_file_handle:
         _log_file_handle.close()
