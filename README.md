@@ -152,6 +152,7 @@ Prüft die reinen Python-Funktionen ohne OSGeo4W/GDAL-Abhängigkeit (Mock).
 | `2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py` | Sub-Script für `SB_DOP_16` | (direkt möglich, Working Part anpassen) |
 | `3_fix_false_nodata_dop.py` | Optionale NoData-Vorkorrektur (SB_DOP), läuft in-place vor Script 1 | ✓ (eigenständiges CLI, siehe Docstring) |
 | `4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py` | LAS 1.2 → 1.4 Vorkonversion (SB_DSM_PUNKTWOLKE), läuft immer automatisch vor Script 1, schreibt auf Arbeitskopie | ✓ (eigenständiges CLI, siehe Docstring) |
+| `5_LAS12_LAS14_batch_inplace_upgrade.py` | Standalone Batch-Tool: LAS 1.2 → 1.4 Inplace-Upgrade über viele Ordner (Textliste), Output = Input, für unbeaufsichtigte Vorprozessierung ausserhalb der GUI-Pipeline | ✓ (eigenständiges CLI, siehe Docstring) |
 | `_osgeo_runner.py` | Interner Subprocess-Runner (OSGeo4W Python) | – |
 | `test_functions.py` | Unit-Tests | ✓ |
 
