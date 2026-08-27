@@ -2,9 +2,9 @@
 Unit-Tests fuer die reinen Python-Funktionen der GDWH-Import-Scripts.
 Getestet werden nur Funktionen ohne externe Abhaengigkeiten (kein GDAL, keine echten Dateien).
 
-Ausfuehren:
-    python test_functions.py
-    python -m pytest test_functions.py -v   (falls pytest installiert)
+Ausfuehren (aus dem Projekt-Hauptverzeichnis):
+    python standaloneTools/test_functions.py
+    python -m pytest standaloneTools/test_functions.py -v   (falls pytest installiert)
 """
 
 import importlib.util
@@ -37,8 +37,10 @@ sys.modules.setdefault("osgeo.gdal", _gdal_mock)
 #  (noetig weil Dateinamen mit Ziffern beginnen)
 # ============================================================
 def _import_script(filename):
-    base = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(base, filename)
+    # test_functions.py liegt in standaloneTools/, die getesteten Scripts in
+    # der Nachbarordner processingScripts/ - siehe Projekt-Ordnerstruktur.
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(project_root, "processingScripts", filename)
     spec = importlib.util.spec_from_file_location(filename, path)
     mod  = importlib.util.module_from_spec(spec)
     # Ausgabe des version-print unterdruecken

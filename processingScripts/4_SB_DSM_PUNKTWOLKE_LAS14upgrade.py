@@ -45,15 +45,15 @@ Vorgehen pro Tile (siehe Docstrings der einzelnen Funktionen fuer Details):
      geschrieben. Bei jedem Fehler bleibt eine evtl. vorhandene Zieldatei
      unangetastet, die Temp-Datei wird verworfen.
 
-Verwendung:
+Verwendung (aus dem Projekt-Hauptverzeichnis):
   Testlauf ohne Schreibzugriff (zeigt geplante Aktionen pro Tile):
-    python 4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py --input-dir Q:\...\input --output-dir Q:\...\output --dry-run
+    python processingScripts\4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py --input-dir Q:\...\input --output-dir Q:\...\output --dry-run
 
   Batch, nicht rekursiv:
-    python 4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py --input-dir Q:\...\input --output-dir Q:\...\output
+    python processingScripts\4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py --input-dir Q:\...\input --output-dir Q:\...\output
 
   Batch, rekursiv (alle Unterordner nach .laz durchsuchen):
-    python 4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py --input-dir Q:\...\input --output-dir Q:\...\output --recursive
+    python processingScripts\4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py --input-dir Q:\...\input --output-dir Q:\...\output --recursive
 
   Kacheln werden standardmaessig parallel verarbeitet (siehe
   _default_worker_count: Kernanzahl - 2, max. 8). Fuer seriellen Ablauf

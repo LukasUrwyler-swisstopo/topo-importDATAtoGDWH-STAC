@@ -538,7 +538,7 @@ def create_and_copy_order(output_path, input_path, GDS):
 
 # ****************************** Working Part ******************************
 # Wird nur ausgeführt wenn das Script direkt gestartet wird (nicht bei Import).
-# Beim Start via GUI (0_main_GDWH_import_GUI.py) werden Pfade und meta_info
+# Beim Start via GUI (GUI_importToGDWH-STAC_SpezialBefliegung.py) werden Pfade und meta_info
 # als Subprocess-Config übergeben und die Funktionen direkt aufgerufen.
 
 if __name__ == "__main__":

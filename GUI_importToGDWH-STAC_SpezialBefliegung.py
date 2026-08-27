@@ -1,5 +1,5 @@
 """
-0_main_GDWH_import_GUI.py  –  GDWH(Bucket) Import GUI
+GUI_importToGDWH-STAC_SpezialBefliegung.py  –  GDWH(Bucket) Import GUI
 Tkinter-Oberfläche für den GDWH-Import.
 Steuert die Sub-Scripts 1, 2_1 und 2_2 je nach gewähltem GDS.
 """
@@ -12,15 +12,16 @@ from datetime import datetime
 
 # ─── Sub-Script Pfade ─────────────────────────────────────────────────────────
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
+PROCESSING_DIR = os.path.join(SCRIPT_DIR, "processingScripts")
 LOG_DIR     = os.path.join(SCRIPT_DIR, "logs")
-SCRIPT_1    = os.path.join(SCRIPT_DIR, "1_allGDS_upload_GDWH_withCHECKxml.py")
-SCRIPT_21   = os.path.join(SCRIPT_DIR, "2_1_SB_DOP_16_FOLDERorganize_by_lineID.py")
-SCRIPT_22   = os.path.join(SCRIPT_DIR, "2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py")
-SCRIPT_3    = os.path.join(SCRIPT_DIR, "3_fix_false_nodata_dop.py")
-SCRIPT_4    = os.path.join(SCRIPT_DIR, "4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py")
-RUNNER_SCRIPT = os.path.join(SCRIPT_DIR, "_osgeo_runner.py")
-SCRIPT_PREVIEW = os.path.join(SCRIPT_DIR, "_tif_preview_reader.py")
-CONFIG_FILE = os.path.join(SCRIPT_DIR, "_gdwh_config.json")
+SCRIPT_1    = os.path.join(PROCESSING_DIR, "1_allGDS_upload_GDWH_withCHECKxml.py")
+SCRIPT_21   = os.path.join(PROCESSING_DIR, "2_1_SB_DOP_16_FOLDERorganize_by_lineID.py")
+SCRIPT_22   = os.path.join(PROCESSING_DIR, "2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py")
+SCRIPT_3    = os.path.join(PROCESSING_DIR, "3_fix_false_nodata_dop.py")
+SCRIPT_4    = os.path.join(PROCESSING_DIR, "4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py")
+RUNNER_SCRIPT = os.path.join(PROCESSING_DIR, "_osgeo_runner.py")
+SCRIPT_PREVIEW = os.path.join(PROCESSING_DIR, "_tif_preview_reader.py")
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "config", "_gdwh_config.json")
 
 # ─── Auswahllisten ────────────────────────────────────────────────────────────
 GDS_ITEMS = [
@@ -190,6 +191,7 @@ def _save_osgeo_config(path):
             with open(CONFIG_FILE, encoding="utf-8") as f:
                 cfg = json.load(f)
         cfg["osgeo_python"] = path
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
     except Exception:
@@ -233,6 +235,7 @@ def _save_staging_config(path):
             with open(CONFIG_FILE, encoding="utf-8") as f:
                 cfg = json.load(f)
         cfg["staging_dir"] = path
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
     except Exception:

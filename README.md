@@ -9,7 +9,7 @@ Ein GUI-Tool, das den kompletten Ablauf von der Datenvorbereitung bis zum STAC-I
 1. **cmd (Terminal) starten**: (Win-Taste + eingabe "cmd")
 2. **Skript starten** im cmd-Terminal: 
 ```
-python pfad/0_main_GDWH_import_GUI.py
+python pfad/GUI_importToGDWH-STAC_SpezialBefliegung.py
 ```
 
 <img width="800" height="1000" alt="image" src="https://github.com/user-attachments/assets/868812f2-df3e-41be-b749-c3a669a50186" />
@@ -91,7 +91,7 @@ Der **Import-Button** bleibt gesperrt, bis alle Pflichtfelder ausgefüllt sind.
 Vereinzelte Pixel/kleine Gruppen, die zufällig dem NoData-Wert entsprechen (z.B. dunkle Schatten, überstrahlte Flächen), aber eigentlich gültige Nutzdaten sind, werden vor dem Import erkannt und korrigiert, damit sie nicht fälschlich als NoData maskiert werden.
 
 **LAS 1.2 → 1.4 Vorkonversion** *(nur SB_DSM_PUNKTWOLKE, immer aktiv, keine Checkbox)*
-Hebt die photogrammetrisch abgeleiteten DSM-Punktwolken-Tiles (LAZ) von LAS 1.2/PF1 ohne CRS-Angabe auf LAS 1.4/PF6 an, damit sie strukturell kongruent zu swissSURFACE3D sind. Das CRS (`EPSG:2056+5728`) wird dabei byte-exakt aus einer verifizierten Referenzkachel injiziert (keine Reprojektion, keine Neuberechnung des WKT). Läuft automatisch vor dem eigentlichen Import auf einer Arbeitskopie; Quelltiles bleiben unverändert. Details siehe [4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py](4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py).
+Hebt die photogrammetrisch abgeleiteten DSM-Punktwolken-Tiles (LAZ) von LAS 1.2/PF1 ohne CRS-Angabe auf LAS 1.4/PF6 an, damit sie strukturell kongruent zu swissSURFACE3D sind. Das CRS (`EPSG:2056+5728`) wird dabei byte-exakt aus einer verifizierten Referenzkachel injiziert (keine Reprojektion, keine Neuberechnung des WKT). Läuft automatisch vor dem eigentlichen Import auf einer Arbeitskopie; Quelltiles bleiben unverändert. Details siehe [4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py](processingScripts/4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py).
 
 **Lokales Staging** *(Performance, Feld „Lokaler Temp-Ordner“)*
 Bei grossen Lieferungen über ein Netzlaufwerk kann ein lokaler Zwischenordner angegeben werden – reduziert die Anzahl Netzwerktransfers pro Tile deutlich.
@@ -124,7 +124,7 @@ logs\GDWHimport_archived_AREA_proGDS.log
 ## Tests
 
 ```bash
-python test_functions.py
+python standaloneTools/test_functions.py
 ```
 Prüft die reinen Python-Funktionen ohne OSGeo4W/GDAL-Abhängigkeit (Mock).
 
@@ -146,17 +146,19 @@ Prüft die reinen Python-Funktionen ohne OSGeo4W/GDAL-Abhängigkeit (Mock).
 
 | Script | Rolle | Direkt ausführbar |
 |--------|-------|:-----------------:|
-| `0_main_GDWH_import_GUI.py` | Hauptscript (GUI) – steuert alle Sub-Scripts | ✓ |
-| `1_allGDS_upload_GDWH_withCHECKxml.py` | Sub-Script für `SB_DOP`, `SB_DSM`, `SB_DSM_PUNKTWOLKE` | (direkt möglich, Working Part anpassen) |
-| `2_1_SB_DOP_16_FOLDERorganize_by_lineID.py` | Sortiert 16BIT-DOP-Dateien nach LineID | (direkt möglich, Pfad anpassen) |
-| `2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py` | Sub-Script für `SB_DOP_16` | (direkt möglich, Working Part anpassen) |
-| `3_fix_false_nodata_dop.py` | Optionale NoData-Vorkorrektur (SB_DOP), läuft in-place vor Script 1 | ✓ (eigenständiges CLI, siehe Docstring) |
-| `4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py` | LAS 1.2 → 1.4 Vorkonversion (SB_DSM_PUNKTWOLKE), läuft immer automatisch vor Script 1, schreibt auf Arbeitskopie | ✓ (eigenständiges CLI, siehe Docstring) |
-| `5_LAS12_LAS14_batch_inplace_upgrade.py` | Standalone Batch-Tool: LAS 1.2 → 1.4 Inplace-Upgrade über viele Ordner (Textliste), Output = Input, für unbeaufsichtigte Vorprozessierung ausserhalb der GUI-Pipeline | ✓ (eigenständiges CLI, siehe Docstring) |
-| `_osgeo_runner.py` | Interner Subprocess-Runner (OSGeo4W Python) | – |
-| `test_functions.py` | Unit-Tests | ✓ |
+| `GUI_importToGDWH-STAC_SpezialBefliegung.py` | Hauptscript (GUI) – steuert alle Sub-Scripts | ✓ |
+| `processingScripts/1_allGDS_upload_GDWH_withCHECKxml.py` | Sub-Script für `SB_DOP`, `SB_DSM`, `SB_DSM_PUNKTWOLKE` | (direkt möglich, Working Part anpassen) |
+| `processingScripts/2_1_SB_DOP_16_FOLDERorganize_by_lineID.py` | Sortiert 16BIT-DOP-Dateien nach LineID | (direkt möglich, Pfad anpassen) |
+| `processingScripts/2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py` | Sub-Script für `SB_DOP_16` | (direkt möglich, Working Part anpassen) |
+| `processingScripts/3_fix_false_nodata_dop.py` | Optionale NoData-Vorkorrektur (SB_DOP), läuft in-place vor Script 1 | ✓ (eigenständiges CLI, siehe Docstring) |
+| `processingScripts/4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py` | LAS 1.2 → 1.4 Vorkonversion (SB_DSM_PUNKTWOLKE), läuft immer automatisch vor Script 1, schreibt auf Arbeitskopie | ✓ (eigenständiges CLI, siehe Docstring) |
+| `processingScripts/_osgeo_runner.py` | Interner Subprocess-Runner (OSGeo4W Python) | – |
+| `processingScripts/_tif_preview_reader.py` | Interner Subprocess-Helper: erzeugt die TIF-Vorschau im GUI | – |
+| `standaloneTools/5_LAS12_LAS14_batch_inplace_upgrade.py` | Standalone Batch-Tool: LAS 1.2 → 1.4 Inplace-Upgrade über viele Ordner (Textliste), Output = Input, für unbeaufsichtigte Vorprozessierung ausserhalb der GUI-Pipeline | ✓ (eigenständiges CLI, siehe Docstring) |
+| `standaloneTools/5_1_LAS12_FolderCopy_4_BatchProcessing.py` | Standalone Tool: kopiert Archiv-Ordner mit LAS-1.2-.laz-Kacheln gespiegelt in eine Kopie, als Vorbereitung für obiges Batch-Tool | ✓ (eigenständiges CLI, siehe Docstring) |
+| `standaloneTools/test_functions.py` | Unit-Tests | ✓ |
 
-Alle Scripts müssen im selben Ordner liegen. `_gdwh_config.json` wird beim ersten GUI-Start automatisch erstellt.
+`GUI_importToGDWH-STAC_SpezialBefliegung.py` liegt im Projekt-Hauptverzeichnis, die Sub-Scripts in `processingScripts/` (von der GUI/vom Runner dynamisch geladen bzw. per Subprocess gestartet), die eigenständigen CLI-Tools in `standaloneTools/` und die Konfiguration in `config/_gdwh_config.json` (wird beim ersten GUI-Start automatisch erstellt).
 
 **Whitelist bei der Quellordner-Bereinigung:**
 

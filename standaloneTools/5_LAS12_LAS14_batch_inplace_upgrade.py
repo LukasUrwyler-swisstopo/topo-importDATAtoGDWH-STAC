@@ -43,26 +43,27 @@ Bereits migrierte Tiles werden erkannt (is_already_migrated in Script 4)
 und nur durchkopiert (das Original wird dabei durch eine identische Kopie
 "ersetzt" - inhaltlich ein No-Op, aber einheitlich behandelt).
 
-Verwendung:
+Verwendung (aus dem Projekt-Hauptverzeichnis):
   Testlauf ohne Schreibzugriff (zeigt geplante Aktionen pro Ordner/Tile):
-    python 5_LAS12_LAS14_batch_inplace_upgrade.py --folder-list ordner.txt --staging-root Y:\...\Temp --dry-run
+    python standaloneTools\5_LAS12_LAS14_batch_inplace_upgrade.py --folder-list ordner.txt --staging-root Y:\...\Temp --dry-run
 
   Batch (Output = Input, LAS-1.2-Originale werden nach Erfolg ersetzt):
-    python 5_LAS12_LAS14_batch_inplace_upgrade.py --folder-list ordner.txt --staging-root Y:\...\Temp
+    python standaloneTools\5_LAS12_LAS14_batch_inplace_upgrade.py --folder-list ordner.txt --staging-root Y:\...\Temp
 
   ordner.txt Beispiel (ein Ordnerpfad pro Zeile):
     Q:\Daten\2025_BIRCH_BLATTEN
     Q:\Daten\2025_ANDERER_ORDNER
     # Kommentarzeilen und Leerzeilen werden ignoriert
 
-Benoetigt: 4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py im selben Ordner (wird per
-importlib dynamisch geladen), pdal.exe im PATH oder osgeo4w-bin (siehe
-dessen _find_pdal_exe).
+Benoetigt: 4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py im Nachbarordner
+processingScripts (wird per importlib dynamisch geladen, siehe
+_lade_script4), pdal.exe im PATH oder osgeo4w-bin (siehe dessen
+_find_pdal_exe).
 
-Konkret im OSGeo4W-Terminal, im Ordner des Scripts ausgeführt (Beispiel mit "--dry-run"):
+Konkret im OSGeo4W-Terminal, im Projekt-Hauptverzeichnis ausgefuehrt (Beispiel mit "--dry-run"):
 
 cd "c:\Users\Lukas Urwyler\Documents\01_GeoData\02_pyScripts\01_swisstopo\topo-importDATAtoGDWH-STAC"
-python 5_LAS12_LAS14_batch_inplace_upgrade.py --folder-list "C:\Pfad\zu\ordner.txt" --staging-root "Y:\00_Temp" --dry-run
+python standaloneTools\5_LAS12_LAS14_batch_inplace_upgrade.py --folder-list "...\<Jahre>_Liste_for_Batch_scriptLAS12-LAS14.txt" --staging-root "Y:\00_Temp" --dry-run
 """
 
 import argparse
@@ -92,17 +93,17 @@ def log(message):
 
 
 def _lade_script4():
-    """Laedt 4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py dynamisch als Modul (muss im
-    selben Ordner wie dieses Script liegen) - gleiches Muster wie
-    _osgeo_runner.py:_lade_modul, damit die Konversionslogik (PDAL-Pipeline,
-    VLR-Injektion, Validierung) an genau einer Stelle im Repo lebt und hier
-    nicht dupliziert wird."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    script4_path = os.path.join(script_dir, SCRIPT4_FILENAME)
+    """Laedt 4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py dynamisch als Modul (liegt im
+    Nachbarordner processingScripts/, dieses Script selbst in
+    standaloneTools/) - gleiches Muster wie _osgeo_runner.py:_lade_modul,
+    damit die Konversionslogik (PDAL-Pipeline, VLR-Injektion, Validierung)
+    an genau einer Stelle im Repo lebt und hier nicht dupliziert wird."""
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script4_path = os.path.join(project_root, "processingScripts", SCRIPT4_FILENAME)
     if not os.path.isfile(script4_path):
         raise FileNotFoundError(
-            f"{SCRIPT4_FILENAME} nicht gefunden in {script_dir} - "
-            f"muss im selben Ordner wie dieses Script liegen."
+            f"{SCRIPT4_FILENAME} nicht gefunden unter {script4_path} - "
+            f"muss im Ordner processingScripts liegen."
         )
     spec = importlib.util.spec_from_file_location("script_4", script4_path)
     mod = importlib.util.module_from_spec(spec)
