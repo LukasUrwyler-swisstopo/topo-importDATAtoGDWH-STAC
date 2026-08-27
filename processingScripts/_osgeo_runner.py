@@ -12,6 +12,7 @@ import builtins
 import importlib.util
 import tempfile
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # preview_xml_attributes-Bestätigung automatisch mit Y beantworten
 builtins.input = lambda prompt="": "Y"
@@ -24,13 +25,52 @@ def _lade_modul(name, pfad):
     return mod
 
 
-def _run_fix_false_nodata(mod3, quelle, meta):
+def _default_worker_count():
+    """Anzahl paralleler Worker-Threads: reserviert 2 Kerne fuer OS/GUI/andere
+    Prozesse, nutzt den Rest bis maximal 8 - identisches Kalkuel wie
+    2_2_SB_DOP_16_GDS_upload_GDWH_withCHECKxml.py::_default_worker_count()."""
+    cpu = os.cpu_count() or 4
+    return max(1, min(cpu - 2, 8))
+
+
+def _fix_false_nodata_one(mod3, path, nodata_value):
+    """Verarbeitet ein einzelnes Tile in-place (siehe Kommentare in
+    _run_fix_false_nodata zu den Parametern). Jedes Tile ist unabhaengig
+    (eigene Datei, eigene temporaere Datei via tempfile.mkstemp), kein
+    gemeinsamer Zustand zwischen Tiles - GDAL-I/O sowie die numpy/scipy-
+    Rasterarbeit (Connected-Component-Labeling in classify_mask) geben den
+    GIL bei grossen Arrays frei, wodurch mehrere Tiles unter
+    ThreadPoolExecutor echt parallel auf mehreren Kernen korrigiert werden
+    koennen, analog _process_tile in Script 2_2."""
+    return mod3.process_tile_inplace(
+        path, nodata_value=nodata_value,
+        strip_existing_mask=True, write_mask=True,
+        rewrite_real_nodata_to_zero=(nodata_value == 255))
+
+
+def _run_fix_false_nodata(mod3, quelle, meta, workers=None):
     """
     Vorkorrektur falscher NoData-Pixel (SB_DOP): laeuft in-place auf allen
     .tif im Quellordner, bevor Script 1 XML/Maske/CSV erzeugt. Der
     NoData-Zielwert (0 oder 255) kommt aus der GUI-Wahl (meta["NoData"]),
     damit Vorkorrektur und die spaetere Maskenberechnung
     (_compute_nodata_mask in Script 1) denselben Wert verwenden.
+
+    Verarbeitet die Tiles parallel ueber ThreadPoolExecutor (siehe
+    _fix_false_nodata_one), sobald mehr als ein Tile vorliegt - identisches
+    Muster wie files_in_order in Script 2_2. Jedes Tile schreibt nur seine
+    eigene Datei (in-place ueber eine eigene Temp-Datei, siehe
+    process_tile_inplace), das Ergebnis ist dadurch unabhaengig von der
+    Verarbeitungsreihenfolge identisch zum bisherigen sequenziellen Lauf -
+    nur die Log-Reihenfolge der Fortschrittszeilen kann abweichen, die
+    Detail-Zeilen pro Gruppe werden bewusst erst danach in der urspruenglichen
+    (sortierten) Dateireihenfolge ausgegeben.
+
+    Bricht beim ersten Fehler eines Tiles ab (noch nicht gestartete Tiles
+    werden nicht mehr eingeplant) und wirft die Exception weiter, exakt wie
+    zuvor die sequenzielle for-Schleife - der Aufrufer (_osgeo_runner-
+    Hauptblock) setzt darauf exit_code=1 und kopiert die gestagten Daten
+    NICHT zurueck (siehe "if staged and exit_code == 0").
     """
     nodata_tokens = (meta.get("NoData") or "").split()
     if not nodata_tokens:
@@ -46,26 +86,41 @@ def _run_fix_false_nodata(mod3, quelle, meta):
         print("[WARNUNG] Vorkorrektur uebersprungen: keine .tif Dateien im Quellordner gefunden.", flush=True)
         return
 
+    if workers is None:
+        workers = _default_worker_count()
+    workers = max(1, min(workers, len(tif_files)))
+
+    results = {}
+    if workers <= 1 or len(tif_files) <= 1:
+        for fn in tif_files:
+            print(f"Verarbeite Datei: {fn}", flush=True)
+            results[fn] = _fix_false_nodata_one(mod3, os.path.join(quelle, fn), nodata_value)
+    else:
+        print(f"Parallelisierung: {workers} gleichzeitige Worker (verfuegbare Kerne: {os.cpu_count()}).", flush=True)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_fn = {
+                executor.submit(_fix_false_nodata_one, mod3, os.path.join(quelle, fn), nodata_value): fn
+                for fn in tif_files
+            }
+            done = 0
+            try:
+                for future in as_completed(future_to_fn):
+                    fn = future_to_fn[future]
+                    results[fn] = future.result()
+                    done += 1
+                    print(f"[{done}/{len(tif_files)}] verarbeitet: {fn}", flush=True)
+            except Exception:
+                # Fail-fast wie die urspruengliche sequenzielle Schleife: noch
+                # nicht gestartete Tiles nicht mehr einplanen, bereits
+                # laufende duerfen noch fertig werden (kein hartes Abbrechen
+                # mitten im Schreibvorgang einer Datei), dann weiterwerfen.
+                for f in future_to_fn:
+                    f.cancel()
+                raise
+
     n_px_total = 0
     for fn in tif_files:
-        path = os.path.join(quelle, fn)
-        # strip_existing_mask=True: entfernt zuerst eine evtl. bereits
-        # vorhandene (falsch berechnete) Flag Mask / NoData-Tag - z.B. aus
-        # einem frueheren, fehlerhaften Lauf - bevor die Pixel korrigiert
-        # werden. Ohne das wuerden falsche 0,0,0/255,255,255-Pixel schon
-        # vorher als NoData maskiert sein.
-        # write_mask=True: die Flag Mask wird hier gleich mitgesetzt (Datei
-        # ist ohnehin schon offen/im Speicher) statt sie in Script 1 per
-        # zusaetzlichem Lese-/Schreibdurchgang neu zu berechnen. Der
-        # NoData-GDAL-Tag bleibt bewusst Aufgabe von Script 1 (dort wird er
-        # GDS-spezifisch normalisiert, siehe normalize_nodata_for_output).
-        # rewrite_real_nodata_to_zero: nur bei historischem NoData-Wert 255
-        # (weiss) - schreibt die echten NoData-Pixel direkt auf 0,0,0, damit
-        # Pixelwerte/Flag Mask/NoData-Tag konsistent sind (siehe README).
-        result = mod3.process_tile_inplace(
-            path, nodata_value=nodata_value,
-            strip_existing_mask=True, write_mask=True,
-            rewrite_real_nodata_to_zero=(nodata_value == 255))
+        result = results[fn]
         n_px_total += result["n_increment_px"]
         shadow_info = (
             f", {result['n_shadow_px']} Schattenpixel (0,0,0) geschuetzt"
