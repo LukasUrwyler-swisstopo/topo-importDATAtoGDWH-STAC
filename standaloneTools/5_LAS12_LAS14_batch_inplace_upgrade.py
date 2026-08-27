@@ -62,7 +62,7 @@ _find_pdal_exe).
 
 Konkret im OSGeo4W-Terminal, im Projekt-Hauptverzeichnis ausgefuehrt (Beispiel mit "--dry-run"):
 
-python "U:\05_pyScripts\01_Tools\1_topo-importDATAtoGDWH-STAC\standaloneTools\5_LAS12_LAS14_batch_inplace_upgrade.py" --folder-list "Y:\01_GDWH-STAC_ArchivCopy\Liste_for_Batch_script_LAS12-LAS14\VDI-Transfer_Liste_for_Batch_scriptLAS12-LAS14.txt" --staging-root "Y:\00_GDWH-STAC_tempProcessingFolder\LAS12toLAS14" --dry-run
+python "U:\05_pyScripts\01_Tools\1_topo-importDATAtoGDWH-STAC\standaloneTools\5_LAS12_LAS14_batch_inplace_upgrade.py" --folder-list "Y:\01_GDWH-STAC_ArchivCopy\_5_Liste_for_Batch_script_LAS12-LAS14\<Jahr>_Liste_for_Batch_scriptLAS12-LAS14_<aktuellesDatum_ZEIT>.txt" --staging-root "Y:\00_GDWH-STAC_tempProcessingFolder\LAS12toLAS14" --dry-run
 """
 
 import argparse

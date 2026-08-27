@@ -17,20 +17,22 @@ Ablauf:
   2. Pro Zeile wird aus dem Pfad das "Jahr" ermittelt (= erster Ordnername
      nach dem Laufwerksbuchstaben, z.B. "2024" bei
      "A:\2024\ALETSCH\DSM\LV95_LN02\TIN\thinned_out_04") und der
-     Zielordner unter --dest-root nach demselben Unterpfad-Muster
-     gespiegelt (Jahresordner wird dabei automatisch mit angelegt):
+     Zielordner unter --dest-root\_backupBUCKET_DATA nach demselben
+     Unterpfad-Muster gespiegelt (Jahresordner wird dabei automatisch mit
+     angelegt):
        A:\2024\ALETSCH\DSM\LV95_LN02\TIN\thinned_out_04
-       -> Y:\01_GDWH-STAC_ArchivCopy\2024\ALETSCH\DSM\LV95_LN02\TIN\thinned_out_04
+       -> Y:\01_GDWH-STAC_ArchivCopy\_backupBUCKET_DATA\2024\ALETSCH\DSM\LV95_LN02\TIN\thinned_out_04
   3. Alle .laz-Dateien (nur oberste Ebene, keine Rekursion) werden von
      Quelle nach Ziel kopiert (shutil.copy2, Zeitstempel bleibt erhalten).
      Dateien, die im Ziel bereits mit identischer Groesse vorliegen,
      werden uebersprungen (Resume nach abgebrochenem Lauf) - ausser
      --overwrite ist gesetzt.
   4. Am Ende wird eine Pfadliste der erzeugten Zielordner geschrieben nach
-     --dest-root\Liste_for_Batch_script_LAS12-LAS14\
-     <JAHR_1>_..._<JAHR_n>_Liste_for_Batch_scriptLAS12-LAS14.txt
-     (Jahre aufsteigend sortiert, eindeutig, mit '_' verbunden). Diese
-     Liste kann direkt als --folder-list fuer
+     --dest-root\_5_Liste_for_Batch_script_LAS12-LAS14\
+     <JAHR_1>_..._<JAHR_n>_Liste_for_Batch_scriptLAS12-LAS14_<YYYYMMDD_HHMMSS>.txt
+     (Jahre aufsteigend sortiert, eindeutig, mit '_' verbunden; der
+     Zeitstempel macht den Dateinamen pro Lauf eindeutig). Diese Liste
+     kann direkt als --folder-list fuer
      5_LAS12_LAS14_batch_inplace_upgrade.py verwendet werden.
 
 Verwendung (aus dem Projekt-Hauptverzeichnis):
@@ -59,7 +61,11 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-LISTE_UNTERORDNER = "Liste_for_Batch_script_LAS12-LAS14"
+LISTE_UNTERORDNER = "_5_Liste_for_Batch_script_LAS12-LAS14"
+# Unterordner unter --dest-root, in dem die gespiegelten Jahresordner mit den
+# kopierten .laz-Daten liegen (--dest-root selbst bleibt "sauber" fuer Logs
+# und die Ergebnisliste, siehe LISTE_UNTERORDNER/LOG_ROOT).
+BACKUP_UNTERORDNER = "_backupBUCKET_DATA"
 # Zentraler Log-Ordner fuer beide Batch-Scripts (5_1 und 5) - unabhaengig von
 # --dest-root/--staging-root, damit alle Laeufe an einem Ort auffindbar sind.
 LOG_ROOT = r"Y:\01_GDWH-STAC_ArchivCopy\_logs"
@@ -112,8 +118,9 @@ def jahr_und_relpfad(src_folder):
     """Ermittelt aus einem Quellpfad (z.B. 'A:\\2024\\ALETSCH\\DSM\\...')
     das Jahr (= erster Ordnername nach dem Laufwerksbuchstaben) und den
     relativen Unterpfad ab diesem Ordner (inkl. Jahresordner selbst), der
-    unveraendert unter --dest-root gespiegelt wird. Wirft ValueError, wenn
-    der Pfad keinen Unterordner nach dem Laufwerk enthaelt."""
+    unveraendert unter --dest-root\\_backupBUCKET_DATA gespiegelt wird (siehe
+    BACKUP_UNTERORDNER). Wirft ValueError, wenn der Pfad keinen Unterordner
+    nach dem Laufwerk enthaelt."""
     _drive, rest = os.path.splitdrive(src_folder)
     rel = rest.lstrip("\\/")
     if not rel:
@@ -201,7 +208,7 @@ def run_copy(folders, dest_root, overwrite, dry_run, workers, summary):
             summary["not_processed"].append(f"{src_folder}: {e}")
             continue
 
-        dest_folder = os.path.join(dest_root, rel)
+        dest_folder = os.path.join(dest_root, BACKUP_UNTERORDNER, rel)
         laz_files = find_laz_files(src_folder)
         if not laz_files:
             log(f"  [WARNUNG] Keine .laz-Dateien gefunden, uebersprungen: {src_folder}")
@@ -254,13 +261,16 @@ def run_copy(folders, dest_root, overwrite, dry_run, workers, summary):
 # ****************************** Ergebnisliste schreiben ******************************
 def schreibe_ergebnisliste(dest_root, dest_folders):
     """Schreibt die Liste der erzeugten Zielordner nach
-    <dest_root>\\Liste_for_Batch_script_LAS12-LAS14\\<Jahre>_Liste_for_Batch_scriptLAS12-LAS14.txt
+    <dest_root>\\_5_Liste_for_Batch_script_LAS12-LAS14\\<Jahre>_Liste_for_Batch_scriptLAS12-LAS14_<Zeitstempel>.txt
     (Jahre = aufsteigend sortierte, eindeutige Jahresordner aus
     dest_folders, mit '_' verbunden - unabhaengig von der Reihenfolge in
-    der urspruenglichen Pfadliste, damit der Dateiname reproduzierbar
-    ist). Gibt den geschriebenen Dateipfad zurueck."""
-    jahre = sorted({os.path.relpath(p, dest_root).split(os.sep)[0] for p in dest_folders})
-    dateiname = "_".join(jahre) + "_Liste_for_Batch_scriptLAS12-LAS14.txt"
+    der urspruenglichen Pfadliste, damit der Dateiname reproduzierbar ist;
+    der Zeitstempel macht den Dateinamen pro Lauf eindeutig, damit kein
+    frueherer Lauf ueberschrieben wird). Gibt den geschriebenen Dateipfad
+    zurueck."""
+    jahre = ermittle_jahre(dest_folders)
+    dateiname = (f"{'_'.join(jahre)}_Liste_for_Batch_scriptLAS12-LAS14_"
+                 f"{datetime.now():%Y%m%d_%H%M%S}.txt")
     ziel_ordner = os.path.join(dest_root, LISTE_UNTERORDNER)
     os.makedirs(ziel_ordner, exist_ok=True)
     ziel_datei = os.path.join(ziel_ordner, dateiname)
@@ -281,7 +291,8 @@ def main():
                         help=".txt-Datei mit einem Quellordner-Pfad pro Zeile "
                              "('#'-Kommentare und Leerzeilen werden ignoriert)")
     parser.add_argument("--dest-root", default=r"Y:\01_GDWH-STAC_ArchivCopy",
-                        help=r"Ziel-Root, unter dem die Ordnerstruktur gespiegelt wird "
+                        help=r"Ziel-Root - die Ordnerstruktur wird darunter gespiegelt nach "
+                             rf"--dest-root\{BACKUP_UNTERORDNER}\<Jahr>\... "
                              r"(Default: Y:\01_GDWH-STAC_ArchivCopy)")
     parser.add_argument("--overwrite", action="store_true",
                         help="Erzwingt das erneute Kopieren, auch wenn im Ziel bereits "
