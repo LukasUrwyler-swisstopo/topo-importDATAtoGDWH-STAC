@@ -48,8 +48,7 @@ Verwendung (aus dem Projekt-Hauptverzeichnis):
 
 Konkret im OSGeo4W-Terminal, im Projekt-Hauptverzeichnis ausgefuehrt (Beispiel mit "--dry-run"):
 
-cd "U:\05_pyScripts\01_Tools\1_topo-importDATAtoGDWH-STAC\standaloneTools" 
-python 5_1_LAS12_FolderCopy_4_BatchProcessing.py --pfad-liste "...\LAS12_PfadListe.txt" --dry-run
+python "U:\05_pyScripts\01_Tools\1_topo-importDATAtoGDWH-STAC\standaloneTools\5_1_LAS12_FolderCopy_4_BatchProcessing.py" --pfad-liste "Y:\01_GDWH-STAC_ArchivCopy\Archiv_LAZ_input_Pfade_txt\Archiv_input_test.txt" --dry-run
 """
 
 import argparse
@@ -302,13 +301,14 @@ def main():
         _log_file_handle.close()
         sys.exit(1)
 
-    summary = {"folders_ok": 0, "folders_failed": 0, "files_total": 0,
+    summary = {"folders_ok": 0, "folders_failed": len(folder_problems), "files_total": 0,
                "files_copied": 0, "files_skipped": 0, "files_failed": 0, "failed_files": []}
     start = datetime.now()
     dest_folders = run_copy(folders, args.dest_root, args.overwrite, args.dry_run, args.workers, summary)
     duration = datetime.now() - start
 
-    log(f"\n=== Zusammenfassung: {len(folders)} Quellordner, {summary['folders_ok']} verarbeitet, "
+    total_quellordner = len(folders) + len(folder_problems)
+    log(f"\n=== Zusammenfassung: {total_quellordner} Quellordner, {summary['folders_ok']} verarbeitet, "
         f"{summary['folders_failed']} uebersprungen/fehlgeschlagen, "
         f"{summary['files_total']} .laz-Dateien, {summary['files_copied']} kopiert, "
         f"{summary['files_skipped']} bereits vorhanden, {summary['files_failed']} fehlgeschlagen, "
