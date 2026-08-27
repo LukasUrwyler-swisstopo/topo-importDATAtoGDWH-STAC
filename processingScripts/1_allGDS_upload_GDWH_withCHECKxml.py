@@ -1,4 +1,4 @@
-print("\nVersion 2.4.2 (Bugfixes: WKT-Polygon, CSV-Leerzeile, GDAL-Handles, src-Parameter, Index-Guards | Stabilität: Log-Cleanup vollständig, Pfadprüfung, makedirs-Timing | Opt: MD5-Chunks 64KB, Fortschrittsanzeige, Traceback-Logging)\n")
+print("\nVersion 2.6.0 (SB_DSM: -9999-Sentinel-Pixel aus LAStools-Pipeline automatisch auf reales Raster-Minimum angehoben, siehe fix_dsm_sentinel_minimum | Opt: parallele Kachel-Verarbeitung/Kopieren via ThreadPoolExecutor fuer SB_DOP/SB_DOP_16/SB_DSM/SB_DSM_PUNKTWOLKE, files.csv weiterhin deterministisch/seriell geschrieben | Bugfixes: WKT-Polygon, CSV-Leerzeile, GDAL-Handles, src-Parameter, Index-Guards | Stabilität: Log-Cleanup vollständig, Pfadprüfung, makedirs-Timing | Opt: MD5-Chunks 64KB, Fortschrittsanzeige, Traceback-Logging)\n")
 
 import os
 import re
@@ -13,6 +13,7 @@ import numpy as np
 from osgeo import gdal
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 
 # ****************************** Log-Funktion ******************************
@@ -288,6 +289,76 @@ def get_nodata_value(filename, GDS, meta_info):
         elif "_dsm_" in fn_lower:
             return "-3.4028235e+38"
     return meta_info.get("NoData", "")
+
+
+# SB_DSM (DSM-Raster, nicht Hillshade): fixer Artefaktwert aus der LAStools-
+# Pipeline bei der DSM-Erzeugung (Autokorrelation) - sehr wenige Pixel,
+# IMMER exakt -9999 (kein Toleranzbereich, vom Nutzer bestaetigt). Kein
+# echter NoData-Wert (der ist bereits korrekt -3.4028235e+38, siehe
+# get_nodata_value) - in der Schweiz gibt es keine realen Hoehen unter
+# -9999m, das ist eindeutig ein Pipeline-Artefakt.
+DSM_SENTINEL_VALUE = -9999.0
+
+
+def fix_dsm_sentinel_minimum(file_path, sentinel_value=DSM_SENTINEL_VALUE,
+                              nodata_value=None, chunk_rows=1000):
+    """
+    Ersetzt Pixel mit dem fixen Sentinel-Wert (siehe DSM_SENTINEL_VALUE) durch
+    das tatsaechliche Minimum aller gueltigen (weder NoData noch Sentinel)
+    Pixel im selben Band - dadurch verzerrt der Sentinel-Wert nicht mehr die
+    COG/STAC-Statistik (Minimum) des DSM-Rasters.
+
+    Zwei chunk-weise Lesedurchgaenge (Chunk-Groesse wie _compute_nodata_mask):
+      1. Globales Minimum der gueltigen Pixel ermitteln (und Sentinel-Pixel
+         zaehlen).
+      2. NUR falls Sentinel-Pixel gefunden wurden: Chunks mit mindestens
+         einem Sentinel-Pixel neu einlesen und schreiben. Ohne Treffer wird
+         NICHTS auf die Platte geschrieben (Datei bleibt byte-identisch).
+
+    Gibt (n_sentinel_px, min_value) zurueck. Bei n_sentinel_px == 0 ist
+    min_value None.
+    """
+    ds = gdal.Open(file_path, gdal.GA_Update)
+    if ds is None:
+        raise FileNotFoundError(f"Konnte Raster nicht zum Schreiben oeffnen: {file_path}")
+    try:
+        band = ds.GetRasterBand(1)
+        x_size, y_size = ds.RasterXSize, ds.RasterYSize
+
+        global_min = None
+        n_sentinel = 0
+        for y_off in range(0, y_size, chunk_rows):
+            rows = min(chunk_rows, y_size - y_off)
+            arr = band.ReadAsArray(0, y_off, x_size, rows)
+            is_sentinel = (arr == sentinel_value)
+            n_sentinel += int(is_sentinel.sum())
+            valid = ~is_sentinel
+            if nodata_value is not None:
+                valid &= (arr != nodata_value)
+            if valid.any():
+                chunk_min = float(arr[valid].min())
+                if global_min is None or chunk_min < global_min:
+                    global_min = chunk_min
+
+        if n_sentinel == 0:
+            return 0, None
+        if global_min is None:
+            raise ValueError(
+                f"Keine gueltigen (nicht-NoData/-Sentinel) Pixel gefunden in "
+                f"'{os.path.basename(file_path)}' - Minimum kann nicht bestimmt werden.")
+
+        for y_off in range(0, y_size, chunk_rows):
+            rows = min(chunk_rows, y_size - y_off)
+            arr = band.ReadAsArray(0, y_off, x_size, rows)
+            is_sentinel = (arr == sentinel_value)
+            if is_sentinel.any():
+                arr[is_sentinel] = global_min
+                band.WriteArray(arr, 0, y_off)
+
+        return n_sentinel, global_min
+    finally:
+        ds.FlushCache()
+        ds = None
 
 def normalize_nodata_for_output(GDS, nodata_str):
     """
@@ -640,8 +711,17 @@ def _csv_append(csv_path, row):
     with open(csv_path, 'a', encoding='utf-8') as f:
         f.write(("\n" if file_exists_with_content else "") + row)
 
-def update_file_csv(output_path, full_file_path, GDS):
-    csv_path = os.path.join(output_path, 'files.csv')
+def _build_csv_rows_and_copy(output_path, full_file_path, GDS):
+    """Kopiert die Datei(en) an ihr NV-/PrecalculatedFormats-Ziel (inkl. MD5
+    im selben Lese-/Schreibdurchgang) und gibt die dabei entstandenen
+    files.csv-Zeile(n) als Liste zurueck - OHNE sie zu schreiben.
+
+    Das Schreiben passiert bewusst erst seriell im Hauptthread (siehe
+    files_in_order/_process_tile): diese Funktion laeuft unter
+    ThreadPoolExecutor parallel pro Kachel, files.csv darf aber nicht aus
+    mehreren Threads gleichzeitig beschrieben werden und soll ausserdem
+    deterministisch in der urspruenglichen Dateireihenfolge entstehen,
+    unabhaengig davon welcher Worker zuerst fertig wird."""
     name = os.path.basename(full_file_path)
     name_parts = name.rsplit('.', 1)[0].split('_')
     ext = os.path.splitext(name)[1].lower()
@@ -664,7 +744,7 @@ def update_file_csv(output_path, full_file_path, GDS):
                 else:
                     copy_with_retry(src, dst)
         tilekey = "1000"
-        row = f"NV\\{subfolder}\\{name};{md5};{tilekey};add;{wkt_footprint(full_file_path)}"
+        return [f"NV\\{subfolder}\\{name};{md5};{tilekey};add;{wkt_footprint(full_file_path)}"]
 
     # === SB_DSM_PUNKTWOLKE ===
     elif GDS == "SB_DSM_PUNKTWOLKE" and ext == ".laz":
@@ -693,10 +773,7 @@ def update_file_csv(output_path, full_file_path, GDS):
 
         row_nv  = f"NV\\SB_DSM_PUNKTWOLKE\\{name};{md5};{tilekey};add;"
         row_pre = f"PrecalculatedFormats\\SB_DSM_PUNKTWOLKE\\{new_name};{md5};{tilekey};add;"
-
-        _csv_append(csv_path, row_nv)
-        _csv_append(csv_path, row_pre)
-        return  # fertig für diesen Datentyp
+        return [row_nv, row_pre]
 
     # === SB_DOP / SB_DOP_16 ===
     elif GDS in ["SB_DOP", "SB_DOP_16"]:
@@ -711,15 +788,13 @@ def update_file_csv(output_path, full_file_path, GDS):
             nv_path = os.path.join(output_path, "NV")
             os.makedirs(nv_path, exist_ok=True)
             copy_with_retry(xml_src, os.path.join(nv_path, os.path.basename(xml_src)))
-        return
+        return []
 
     # === Default ===
     else:
         tile = name_parts[-2] + "_" + name_parts[-1]
         md5 = calculate_md5(full_file_path)
-        row = f"NV\\{name};{md5};{tile};add;"
-
-    _csv_append(csv_path, row)
+        return [f"NV\\{name};{md5};{tile};add;"]
 
 # ****************************** Hauptlogik ******************************
 def cleanup_input_folder(src, GDS):
@@ -767,7 +842,89 @@ def cleanup_input_folder(src, GDS):
         log(f"Bereinigung: {deleted} Datei(en) geloescht (behalten: {erlaubt}).")
 
 
-def files_in_order(src, out, GDS, meta):
+# ****************************** Parallelisierung ******************************
+def _default_worker_count():
+    """Anzahl paralleler Worker-Threads: reserviert 2 Kerne fuer OS/GUI/andere
+    Prozesse, nutzt den Rest bis maximal 8 - identisches Kalkuel wie
+    4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py::_default_worker_count()."""
+    cpu = os.cpu_count() or 4
+    return max(1, min(cpu - 2, 8))
+
+
+def _process_tile(fn, src, out, GDS, meta, cached_attrs):
+    """Verarbeitet eine einzelne Kachel (XML, NoData-Tag, Maske, Kopieren,
+    files.csv-Zeile(n) berechnen). Jede Kachel ist unabhaengig (eigene
+    Datei, kein gemeinsamer Zustand) - GDAL-Rasteroperationen und
+    hashlib.md5 geben den GIL bei grossen Arrays/Buffern frei, wodurch
+    mehrere Kacheln unter ThreadPoolExecutor echt parallel auf mehreren
+    Kernen verarbeitet werden koennen (siehe files_in_order). Schreibt
+    bewusst NICHT direkt in files.csv - der Aufrufer haengt die
+    zurueckgegebenen csv_rows seriell im Hauptthread an, in der
+    urspruenglichen Dateireihenfolge, unabhaengig davon welcher Worker
+    zuerst fertig wird."""
+    fp = os.path.join(src, fn)
+    try:
+        create_xml(fp, GDS, meta, cached_raster_attrs=cached_attrs)
+        if GDS != "SB_DSM_PUNKTWOLKE" and fn.lower().endswith(('.tif', '.tiff')):
+            nodata_str = get_nodata_value(fn, GDS, meta)
+            # SB_DSM DSM-Raster (nicht Hillshade) bewusst OHNE interne Maske:
+            # der NoData-Tag war hier bereits vorher korrekt gesetzt, die
+            # zusaetzliche Maske fuehrte in STAC/Kartenviewer zu falscher
+            # noData-Darstellung (Vorfall 23.7.2026). Fuer Hillshade bleibt
+            # die Maske wie gehabt bestehen.
+            is_sb_dsm_raster = GDS == "SB_DSM" and "_hillshade_" not in fn.lower()
+
+            if is_sb_dsm_raster:
+                # LAStools-Pipeline-Artefakt (siehe DSM_SENTINEL_VALUE): sehr
+                # wenige Pixel mit fixem Wert -9999, IMMER exakt, kein echter
+                # NoData (der ist bereits korrekt -3.4028235e+38). Vor dem
+                # NoData-Tag auf das reale Minimum des Rasters anheben, damit
+                # die spaetere COG/STAC-Statistik (Minimum) nicht verzerrt
+                # wird - laeuft automatisch, keine GUI-Option noetig.
+                n_fixed, fixed_min = fix_dsm_sentinel_minimum(
+                    fp, nodata_value=float(nodata_str) if nodata_str else None)
+                if n_fixed:
+                    log(f"  {fn}: {n_fixed} Sentinel-Pixel ({DSM_SENTINEL_VALUE}) "
+                        f"auf Minimum {fixed_min:.3f} angehoben.")
+
+            if nodata_str:
+                # nodata_str (Quellwert, z.B. "255 255 255") wird nur fuer die
+                # Maskenberechnung verwendet. Der geschriebene GDAL-Tag nutzt
+                # den normalisierten Wert (SB_DOP: immer 0, siehe
+                # normalize_nodata_for_output).
+                tag_nodata_on_raster(fp, normalize_nodata_for_output(GDS, nodata_str))
+                # SB_DOP mit vorgeschalteter Vorkorrektur (3_fix_false_nodata_dop.py,
+                # via GUI-Option): die Flag Mask wurde dort bereits direkt beim
+                # Korrigieren der Pixel geschrieben (spart einen zusaetzlichen
+                # vollstaendigen Lese-/Schreibdurchgang pro Tile) - hier nicht
+                # nochmals berechnen. Der NoData-Tag oben wird trotzdem wie
+                # gehabt gesetzt.
+                mask_already_set = GDS == "SB_DOP" and meta.get("FixFalseNodata")
+                if not is_sb_dsm_raster and not mask_already_set:
+                    # Historische 255er-NoData-DOPs: echte NoData-Pixel
+                    # gleich beim Maske-Berechnen auf 0,0,0 umschreiben
+                    # (siehe README "Historische 255er-NoData-DOPs").
+                    rewrite_to_zero = (GDS == "SB_DOP"
+                                       and all(float(v) == 255 for v in nodata_str.split()))
+                    # SB_DOP mit NoData 0,0,0 (kein Pixel-Rewrite, siehe
+                    # rewrite_to_zero oben): Maskenberechnung ist hier
+                    # seiteneffektfrei, deshalb Skip erlaubt, falls die
+                    # Datei bereits eine Maske hat (z.B. fortgesetzter
+                    # Lauf). Bei 255,255,255 bewusst NICHT skippen - dort
+                    # ist die Maskenberechnung mit dem Pixel-Rewrite
+                    # gekoppelt (siehe _raster_has_internal_mask).
+                    skip_if_present = GDS == "SB_DOP" and not rewrite_to_zero
+                    if skip_if_present and _raster_has_internal_mask(fp):
+                        log(f"  Flag Mask bereits vorhanden, Berechnung uebersprungen: {fn}")
+                    else:
+                        tag_mask_on_raster(fp, nodata_str, rewrite_real_nodata_to_zero=rewrite_to_zero)
+        rows = _build_csv_rows_and_copy(out, fp, GDS)
+        return {"status": "ok", "error": None, "traceback": None, "rows": rows}
+    except Exception as e:
+        return {"status": "failed", "error": str(e), "traceback": traceback.format_exc(), "rows": []}
+
+
+def files_in_order(src, out, GDS, meta, workers=None):
     missing_xml = []
 
     # Altbestaende bereinigen (GDS-spezifische Whitelist),
@@ -794,55 +951,45 @@ def files_in_order(src, out, GDS, meta):
             cached_attrs = get_raster_attributes(os.path.join(src, first_tif))
             log(f"Raster-Attribute aus '{first_tif}' gecacht (gilt für alle {len(files)} XML).\n")
 
-    for i, fn in enumerate(files, 1):
-        fp = os.path.join(src, fn)
-        log(f"[{i}/{len(files)}] Verarbeite: {fn}")
-        try:
-            create_xml(fp, GDS, meta, cached_raster_attrs=cached_attrs)
-            if GDS != "SB_DSM_PUNKTWOLKE" and fn.lower().endswith(('.tif', '.tiff')):
-                nodata_str = get_nodata_value(fn, GDS, meta)
-                if nodata_str:
-                    # nodata_str (Quellwert, z.B. "255 255 255") wird nur fuer die
-                    # Maskenberechnung verwendet. Der geschriebene GDAL-Tag nutzt
-                    # den normalisierten Wert (SB_DOP: immer 0, siehe
-                    # normalize_nodata_for_output).
-                    tag_nodata_on_raster(fp, normalize_nodata_for_output(GDS, nodata_str))
-                    # SB_DSM DSM-Raster (nicht Hillshade) bewusst OHNE interne Maske:
-                    # der NoData-Tag war hier bereits vorher korrekt gesetzt, die
-                    # zusaetzliche Maske fuehrte in STAC/Kartenviewer zu falscher
-                    # noData-Darstellung (Vorfall 23.7.2026). Fuer Hillshade bleibt
-                    # die Maske wie gehabt bestehen.
-                    is_sb_dsm_raster = GDS == "SB_DSM" and "_hillshade_" not in fn.lower()
-                    # SB_DOP mit vorgeschalteter Vorkorrektur (3_fix_false_nodata_dop.py,
-                    # via GUI-Option): die Flag Mask wurde dort bereits direkt beim
-                    # Korrigieren der Pixel geschrieben (spart einen zusaetzlichen
-                    # vollstaendigen Lese-/Schreibdurchgang pro Tile) - hier nicht
-                    # nochmals berechnen. Der NoData-Tag oben wird trotzdem wie
-                    # gehabt gesetzt.
-                    mask_already_set = GDS == "SB_DOP" and meta.get("FixFalseNodata")
-                    if not is_sb_dsm_raster and not mask_already_set:
-                        # Historische 255er-NoData-DOPs: echte NoData-Pixel
-                        # gleich beim Maske-Berechnen auf 0,0,0 umschreiben
-                        # (siehe README "Historische 255er-NoData-DOPs").
-                        rewrite_to_zero = (GDS == "SB_DOP"
-                                           and all(float(v) == 255 for v in nodata_str.split()))
-                        # SB_DOP mit NoData 0,0,0 (kein Pixel-Rewrite, siehe
-                        # rewrite_to_zero oben): Maskenberechnung ist hier
-                        # seiteneffektfrei, deshalb Skip erlaubt, falls die
-                        # Datei bereits eine Maske hat (z.B. fortgesetzter
-                        # Lauf). Bei 255,255,255 bewusst NICHT skippen - dort
-                        # ist die Maskenberechnung mit dem Pixel-Rewrite
-                        # gekoppelt (siehe _raster_has_internal_mask).
-                        skip_if_present = GDS == "SB_DOP" and not rewrite_to_zero
-                        if skip_if_present and _raster_has_internal_mask(fp):
-                            log(f"  Flag Mask bereits vorhanden, Berechnung uebersprungen: {fn}")
-                        else:
-                            tag_mask_on_raster(fp, nodata_str, rewrite_real_nodata_to_zero=rewrite_to_zero)
-            update_file_csv(out, fp, GDS)
-        except Exception as e:
+    if workers is None:
+        workers = _default_worker_count()
+    workers = max(1, min(workers, len(files) or 1))
+
+    results = {}
+    if workers <= 1 or len(files) <= 1:
+        for fn in files:
+            log(f"Verarbeite: {fn}")
+            results[fn] = _process_tile(fn, src, out, GDS, meta, cached_attrs)
+    else:
+        log(f"Parallelisierung: {workers} gleichzeitige Worker (verfuegbare Kerne: {os.cpu_count()}).")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_fn = {
+                executor.submit(_process_tile, fn, src, out, GDS, meta, cached_attrs): fn
+                for fn in files
+            }
+            done = 0
+            for future in as_completed(future_to_fn):
+                fn = future_to_fn[future]
+                done += 1
+                log(f"[{done}/{len(files)}] verarbeitet: {fn}")
+                try:
+                    results[fn] = future.result()
+                except Exception as e:
+                    results[fn] = {"status": "failed", "error": f"Unerwarteter Fehler im Worker: {e}",
+                                   "traceback": traceback.format_exc(), "rows": []}
+
+    # files.csv seriell im Hauptthread schreiben, in der urspruenglichen
+    # Dateireihenfolge - siehe _process_tile/_build_csv_rows_and_copy.
+    csv_path = os.path.join(out, 'files.csv')
+    for fn in files:
+        result = results[fn]
+        if result["status"] == "ok":
+            for row in result["rows"]:
+                _csv_append(csv_path, row)
+        else:
             # OPT: Vollständiger Traceback im Log für einfacheres Debugging
-            log(f"Fehler bei {fn}: {e}")
-            log(traceback.format_exc())
+            log(f"Fehler bei {fn}: {result['error']}")
+            log(result["traceback"])
             missing_xml.append(fn)
 
     if missing_xml:
@@ -856,29 +1003,71 @@ def files_in_order(src, out, GDS, meta):
     # damit auch der nachfolgende create_and_copy_order-Aufruf noch ins Log schreibt.
 
 # ****************************** DOP-Kopieren ******************************
-def create_and_copy_order(out, src, GDS):
+def create_and_copy_order(out, src, GDS, workers=None):
     if GDS in ["SB_DOP", "SB_DOP_16"]:
         nv_path = os.path.join(out, "NV")
         csv_path = os.path.join(out, "files.csv")
         os.makedirs(nv_path, exist_ok=True)
-        for fn in os.listdir(src):
-            if fn.lower().endswith('.tif'):
-                # MD5 + files.csv-Zeile erst hier, im selben Lese-/
-                # Schreibdurchgang wie das eigentliche Kopieren (siehe
-                # update_file_csv) - spart den vorher separaten, vollen
-                # MD5-Lesevorgang der Quelldatei.
-                name_parts = fn.rsplit('.', 1)[0].split('_')
-                if "LV95" not in name_parts:
-                    raise ValueError(f"LV95 nicht im Dateinamen gefunden: {fn}")
-                lv95_index = name_parts.index("LV95")
-                if lv95_index < 2:
-                    raise ValueError(f"'LV95' steht zu früh im Dateinamen (Position {lv95_index}): {fn}")
-                tile = name_parts[lv95_index - 2] + "_" + name_parts[lv95_index - 1]
 
-                md5 = copy_with_retry_md5(os.path.join(src, fn), os.path.join(nv_path, fn))
-                _csv_append(csv_path, f"NV\\{fn};{md5};{tile};add;")
-            elif fn.lower().endswith('.tfw'):
-                copy_with_retry(os.path.join(src, fn), os.path.join(nv_path, fn))
+        tif_files = sorted(fn for fn in os.listdir(src) if fn.lower().endswith('.tif'))
+        tfw_files = sorted(fn for fn in os.listdir(src) if fn.lower().endswith('.tfw'))
+
+        def _copy_tif(fn):
+            # MD5 + files.csv-Zeile im selben Lese-/Schreibdurchgang wie das
+            # eigentliche Kopieren berechnen (spart den vorher separaten,
+            # vollen MD5-Lesevorgang der Quelldatei) - Zeile wird
+            # zurueckgegeben statt direkt geschrieben, siehe Aufrufer unten.
+            name_parts = fn.rsplit('.', 1)[0].split('_')
+            if "LV95" not in name_parts:
+                raise ValueError(f"LV95 nicht im Dateinamen gefunden: {fn}")
+            lv95_index = name_parts.index("LV95")
+            if lv95_index < 2:
+                raise ValueError(f"'LV95' steht zu früh im Dateinamen (Position {lv95_index}): {fn}")
+            tile = name_parts[lv95_index - 2] + "_" + name_parts[lv95_index - 1]
+            md5 = copy_with_retry_md5(os.path.join(src, fn), os.path.join(nv_path, fn))
+            return f"NV\\{fn};{md5};{tile};add;"
+
+        if workers is None:
+            workers = _default_worker_count()
+        workers = max(1, min(workers, len(tif_files) or 1))
+
+        rows = {}
+        errors = []
+        if workers <= 1 or len(tif_files) <= 1:
+            for fn in tif_files:
+                try:
+                    rows[fn] = _copy_tif(fn)
+                except Exception as e:
+                    errors.append((fn, e))
+        else:
+            log(f"Parallelisierung: {workers} gleichzeitige Kopier-Worker (verfuegbare Kerne: {os.cpu_count()}).")
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_fn = {executor.submit(_copy_tif, fn): fn for fn in tif_files}
+                for future in as_completed(future_to_fn):
+                    fn = future_to_fn[future]
+                    try:
+                        rows[fn] = future.result()
+                    except Exception as e:
+                        errors.append((fn, e))
+
+        # files.csv seriell im Hauptthread schreiben, in der urspruenglichen
+        # (sortierten) Dateireihenfolge - nur fuer erfolgreich kopierte
+        # Dateien. Anders als vorher (rein serielle Schleife, brach beim
+        # ersten Fehler sofort ab) werden hier alle TIFs versucht, bevor am
+        # Ende eine Exception geworfen wird, falls welche fehlgeschlagen sind
+        # - der Lauf gilt damit weiterhin wie bisher als fehlgeschlagen,
+        # es bleibt aber nichts unbemerkt unversucht.
+        for fn in tif_files:
+            if fn in rows:
+                _csv_append(csv_path, rows[fn])
+
+        if errors:
+            details = "; ".join(f"{fn}: {e}" for fn, e in errors)
+            raise RuntimeError(f"{len(errors)} TIF(s) konnten nicht kopiert werden: {details}")
+
+        for fn in tfw_files:
+            copy_with_retry(os.path.join(src, fn), os.path.join(nv_path, fn))
+
         log("DOP-Dateien kopiert.\n")
 
 # ****************************** Working Part ******************************

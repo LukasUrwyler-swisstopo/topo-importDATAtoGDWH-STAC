@@ -40,6 +40,15 @@ Vorgehen pro Tile (siehe Docstrings der einzelnen Funktionen fuer Details):
        - PDALs eigene writers.las-Option 'vlrs' verwirft VLRs mit
          user_id "LASF_Projection" (reserviert fuer PDAL-eigene SRS-VLRs)
          still und ohne Fehlermeldung - deshalb Byte-Patch statt PDAL-Option.
+       - Manche Quell-Batches (z.B. Job BONDO 2017, Vorfall 27.8.2026) haben
+         trotz "keine CRS-Angabe" im Sinne dieses Skripts bereits eine
+         unvollstaendige/bedeutungslose GeoTIFF-VLR im Header (Ueberrest
+         einer aelteren LAStools-Vorstufe wie 'lasclip', z.B.
+         LOCAL_CS["unnamed"]). PDAL uebernimmt diese beim Lesen/Schreiben
+         automatisch in die neue LAS-1.4-Datei (auch ohne dass das Skript
+         das anfordert) - inject_reference_vlrs() entfernt eine solche
+         uebernommene VLR deshalb, statt abzubrechen (siehe dortiger
+         Docstring).
   5. Vollstaendige Nachkonversions-Validierung (siehe validate_target).
      Erst bei vollstaendigem Erfolg wird die Zieldatei atomar (os.replace)
      geschrieben. Bei jedem Fehler bleibt eine evtl. vorhandene Zieldatei
@@ -388,10 +397,23 @@ def inject_reference_vlrs(las_path):
     siehe Modul-Docstring - ein rein VLR-verschiebender Patch reicht bei LAZ
     NICHT aus).
 
-    Erwartet, dass die Datei noch KEINEN VLR mit user_id 'LASF_Projection'
-    hat (waere ein Zeichen, dass bereits ein CRS gesetzt wurde - sollte durch
-    is_already_migrated() vorher ausgeschlossen sein). Arbeitet in-place auf
-    las_path (soll nur auf einer Temp-Datei aufgerufen werden, siehe convert_tile).
+    Ein bereits vorhandener VLR mit user_id 'LASF_Projection' wird entfernt,
+    NICHT als Fehler behandelt (fruehere Version brach hier ab). Grund
+    (empirisch bestaetigt, siehe README/Vorfall 27.8.2026, Job BONDO 2017):
+    is_already_migrated() prueft nur, ob die QUELLE bereits vollstaendig im
+    Zielformat vorliegt - verhindert aber NICHT, dass PDAL beim Lesen/
+    Schreiben eine in der Quelle erkannte, aber unvollstaendige/bedeutungs-
+    lose GeoTIFF-VLR (z.B. LOCAL_CS["unnamed"] als Ueberrest einer aelteren
+    LAStools-Vorstufe wie 'lasclip') automatisch in die frisch geschriebene
+    LAS-1.4-Datei uebernimmt - selbst wenn dabei ein VLR entsteht (record_id
+    2112, OGC WKT), den die Quelle gar nicht hatte. Eine solche uebernommene
+    VLR ist NIEMALS autoritativ fuer die Ziel-CRS (die kommt ausschliesslich
+    aus der byte-exakten Referenz weiter unten) und wird deshalb entfernt statt
+    den Lauf abzubrechen. Arbeitet in-place auf las_path (soll nur auf einer
+    Temp-Datei aufgerufen werden, siehe convert_tile).
+
+    Gibt die Anzahl entfernter 'LASF_Projection'-VLRs zurueck (0 = normaler
+    Fall, keine vorhanden).
     """
     with open(las_path, "rb") as f:
         data = f.read()
@@ -400,35 +422,43 @@ def inject_reference_vlrs(las_path):
     existing_vlr_block = data[header_size:offset_to_point_data]
 
     is_laszip = False
+    n_stripped = 0
+    kept_vlr_chunks = []
     pos = 0
     for _ in range(n_vlr):
         _, user_id_raw, record_id, record_len, _ = struct.unpack_from(
             "<H16sHH32s", existing_vlr_block, pos)
         user_id = user_id_raw.split(b"\x00")[0].decode("ascii", "replace")
+        vlr_len = 54 + record_len
         if user_id == "LASF_Projection":
-            raise RuntimeError(
-                f"'{os.path.basename(las_path)}' hat bereits einen VLR mit "
-                f"user_id 'LASF_Projection' (record_id {record_id}) - "
-                f"CRS-Injektion abgebrochen, um nichts zu duplizieren/ueberschreiben."
-            )
+            n_stripped += 1
+        else:
+            kept_vlr_chunks.append(existing_vlr_block[pos:pos + vlr_len])
         if user_id == "laszip encoded" and record_id == 22204:
             is_laszip = True
-        pos += 54 + record_len
+        pos += vlr_len
+
+    existing_vlr_block = b"".join(kept_vlr_chunks)
+    n_vlr -= n_stripped
 
     payload_34735 = base64.b64decode(REFERENCE_VLR_34735_B64)
     payload_2112 = base64.b64decode(REFERENCE_VLR_2112_B64)
     vlr1 = _build_vlr_record("LASF_Projection", 34735, REFERENCE_VLR_DESCRIPTION, payload_34735)
     vlr2 = _build_vlr_record("LASF_Projection", 2112, REFERENCE_VLR_DESCRIPTION, payload_2112)
     new_vlr_block = bytes(existing_vlr_block) + vlr1 + vlr2
-    inserted_bytes = len(vlr1) + len(vlr2)
+    new_offset_to_point_data = header_size + len(new_vlr_block)
+    # Tatsaechliche Verschiebung der Punktdaten im Byte-Layout - NICHT einfach
+    # len(vlr1)+len(vlr2): wurden oben VLRs entfernt (n_stripped > 0), wurden
+    # gleichzeitig Bytes aus dem Block entfernt, die Nettoverschiebung ist
+    # dann kleiner. Massgeblich ist die tatsaechliche Differenz der
+    # offset_to_point_data-Werte.
+    shift = new_offset_to_point_data - offset_to_point_data
 
     point_data = bytearray(data[offset_to_point_data:])
     if is_laszip:
         chunk_table_pos, = struct.unpack_from("<q", point_data, 0)
         if chunk_table_pos != -1:  # -1 = LASzip-Platzhalter, kommt bei fertig geschriebenen Dateien nicht vor
-            struct.pack_into("<q", point_data, 0, chunk_table_pos + inserted_bytes)
-
-    new_offset_to_point_data = header_size + len(new_vlr_block)
+            struct.pack_into("<q", point_data, 0, chunk_table_pos + shift)
 
     new_data = bytearray(data[:header_size]) + new_vlr_block + point_data
     struct.pack_into("<I", new_data, 96, new_offset_to_point_data)
@@ -439,6 +469,8 @@ def inject_reference_vlrs(las_path):
 
     with open(las_path, "wb") as f:
         f.write(new_data)
+
+    return n_stripped
 
 
 # ****************************** Validierung Quelle vs. Ziel ******************************
@@ -651,7 +683,13 @@ def convert_tile(src_path, dst_dir, target_scale=0.01, dry_run=False):
                 result["error"] = f"Classification-Ermittlung (Quelle) fehlgeschlagen: {e}"
                 return result
 
-        inject_reference_vlrs(tmp_path)
+        n_stripped_vlrs = inject_reference_vlrs(tmp_path)
+        if n_stripped_vlrs:
+            result["warnings"].append(
+                f"{name}: {n_stripped_vlrs} von PDAL aus der Quelle uebernommene(r) "
+                f"'LASF_Projection'-VLR(s) entfernt (nicht autoritativ, siehe "
+                f"inject_reference_vlrs-Docstring) - durch die Referenz-VLRs ersetzt."
+            )
 
         dst_meta = pdal_metadata(tmp_path)
         problems = validate_target(src_meta, dst_meta)

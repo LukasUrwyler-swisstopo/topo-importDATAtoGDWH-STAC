@@ -1,4 +1,4 @@
-print("\nVersion GDS_DOP_16: 16BIT , 2.0.0 (Remove FlightYear/ResolutionOfOrigin/Provider | Add NoData | AcquisitionTimes mit Hundertstelsekunden)\n")
+print("\nVersion GDS_DOP_16: 16BIT , 2.1.0 (Opt: parallele Kachel-Verarbeitung/Kopieren via ThreadPoolExecutor, files.csv weiterhin deterministisch/seriell geschrieben)\n")
 
 import os
 import re
@@ -9,6 +9,7 @@ import shutil
 import numpy as np
 from osgeo import gdal
 from xml.dom import minidom
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 
 gdal.UseExceptions()
@@ -451,8 +452,10 @@ def tag_mask_on_raster(file_path, nodata_str):
         ds = None
 
 
-def update_file_csv(output_path, full_file_path, GDS):
-    csv_file_path = os.path.join(output_path, 'files.csv')
+def _build_file_csv_row(full_file_path, GDS):
+    """Berechnet Tile-Key und MD5 und gibt die fertige files.csv-Zeile
+    zurueck (OHNE sie zu schreiben - siehe _process_tile/files_in_order:
+    das Schreiben passiert bewusst erst seriell im Hauptthread)."""
     filename = os.path.basename(full_file_path)
     name_parts = filename.rsplit('.', 1)[0].split('_')
 
@@ -468,18 +471,58 @@ def update_file_csv(output_path, full_file_path, GDS):
         tile = ""
 
     md5_hash = calculate_md5(full_file_path)
-    row_data = f"NV\\{filename};{md5_hash};{tile};add;"
+    return f"NV\\{filename};{md5_hash};{tile};add;"
 
+
+def _append_csv_row(output_path, row):
+    csv_file_path = os.path.join(output_path, 'files.csv')
     file_is_new = not os.path.exists(csv_file_path) or os.path.getsize(csv_file_path) == 0
     with open(csv_file_path, 'a', encoding='utf-8') as f:
         if not file_is_new:
             f.write("\n")
-        f.write(row_data)
+        f.write(row)
+
+
+# ****************************** Parallelisierung ******************************
+def _default_worker_count():
+    """Anzahl paralleler Worker-Threads: reserviert 2 Kerne fuer OS/GUI/andere
+    Prozesse, nutzt den Rest bis maximal 8 - identisches Kalkuel wie
+    4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py::_default_worker_count()."""
+    cpu = os.cpu_count() or 4
+    return max(1, min(cpu - 2, 8))
+
+
+def _process_tile(fn, path, GDS, meta_info, cached_attrs):
+    """Verarbeitet eine einzelne Kachel (XML, NoData-Tag, Maske, files.csv-
+    Zeile berechnen). Jede Kachel ist unabhaengig (eigene Datei, kein
+    gemeinsamer Zustand) - GDAL-Rasteroperationen und hashlib.md5 geben den
+    GIL bei grossen Arrays/Buffern frei, wodurch mehrere Kacheln unter
+    ThreadPoolExecutor echt parallel auf mehreren Kernen verarbeitet werden
+    koennen (siehe files_in_order). Schreibt bewusst NICHT direkt in
+    files.csv - der Aufrufer haengt die zurueckgegebene csv_row seriell im
+    Hauptthread an, in der urspruenglichen (sortierten) Dateireihenfolge,
+    unabhaengig davon welcher Worker zuerst fertig wird."""
+    full_file_path = os.path.join(path, fn)
+    try:
+        create_xml(full_file_path, GDS, meta_info, cached_raster_attrs=cached_attrs)
+        if fn.lower().endswith(('.tif', '.tiff')):
+            nodata_str = meta_info.get("NoData", "")
+            if nodata_str:
+                # nodata_str (Quellwert, z.B. "65535 65535 65535 65535") wird nur
+                # fuer die Maskenberechnung verwendet. Der geschriebene GDAL-Tag
+                # nutzt den normalisierten Wert (immer 0, siehe
+                # normalize_nodata_for_output).
+                tag_nodata_on_raster(full_file_path, normalize_nodata_for_output(nodata_str))
+                tag_mask_on_raster(full_file_path, nodata_str)
+        return {"status": "ok", "error": None, "csv_row": _build_file_csv_row(full_file_path, GDS)}
+    except Exception as e:
+        return {"status": "failed", "error": str(e), "csv_row": None}
+
 
 # ****************************** Main Functions ******************************
 
-def files_in_order(path, output_path, GDS, meta_info):
-    # Output-Verzeichnis sicherstellen — update_file_csv schreibt CSV direkt hinein
+def files_in_order(path, output_path, GDS, meta_info, workers=None):
+    # Output-Verzeichnis sicherstellen — files.csv wird direkt hinein geschrieben
     os.makedirs(output_path, exist_ok=True)
 
     all_files = sorted(fn for fn in os.listdir(path)
@@ -493,25 +536,42 @@ def files_in_order(path, output_path, GDS, meta_info):
         cached_attrs = get_raster_attributes(os.path.join(path, first_tif))
         log(f"Raster-Attribute aus '{first_tif}' gecacht (gilt für alle {len(all_files)} XML).\n")
 
-    for fn in all_files:
-        full_file_path = os.path.join(path, fn)
-        log(f"Verarbeite Datei: {fn}")
-        try:
-            create_xml(full_file_path, GDS, meta_info, cached_raster_attrs=cached_attrs)
-            if fn.lower().endswith(('.tif', '.tiff')):
-                nodata_str = meta_info.get("NoData", "")
-                if nodata_str:
-                    # nodata_str (Quellwert, z.B. "65535 65535 65535 65535") wird nur
-                    # fuer die Maskenberechnung verwendet. Der geschriebene GDAL-Tag
-                    # nutzt den normalisierten Wert (immer 0, siehe
-                    # normalize_nodata_for_output).
-                    tag_nodata_on_raster(full_file_path, normalize_nodata_for_output(nodata_str))
-                    tag_mask_on_raster(full_file_path, nodata_str)
-            update_file_csv(output_path, full_file_path, GDS)
-        except Exception as e:
-            log(f"Fehler bei Datei {fn}: {e}")
+    if workers is None:
+        workers = _default_worker_count()
+    workers = max(1, min(workers, len(all_files) or 1))
 
-def create_and_copy_order(output_path, input_path, GDS):
+    results = {}
+    if workers <= 1 or len(all_files) <= 1:
+        for fn in all_files:
+            log(f"Verarbeite Datei: {fn}")
+            results[fn] = _process_tile(fn, path, GDS, meta_info, cached_attrs)
+    else:
+        log(f"Parallelisierung: {workers} gleichzeitige Worker (verfuegbare Kerne: {os.cpu_count()}).")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_fn = {
+                executor.submit(_process_tile, fn, path, GDS, meta_info, cached_attrs): fn
+                for fn in all_files
+            }
+            done = 0
+            for future in as_completed(future_to_fn):
+                fn = future_to_fn[future]
+                done += 1
+                log(f"[{done}/{len(all_files)}] verarbeitet: {fn}")
+                try:
+                    results[fn] = future.result()
+                except Exception as e:
+                    results[fn] = {"status": "failed", "error": f"Unerwarteter Fehler im Worker: {e}", "csv_row": None}
+
+    # files.csv seriell im Hauptthread schreiben, in der urspruenglichen
+    # (sortierten) Dateireihenfolge - siehe _process_tile-Docstring.
+    for fn in all_files:
+        result = results[fn]
+        if result["status"] == "ok":
+            _append_csv_row(output_path, result["csv_row"])
+        else:
+            log(f"Fehler bei Datei {fn}: {result['error']}")
+
+def create_and_copy_order(output_path, input_path, GDS, workers=None):
     new_order_path = os.path.join(output_path, 'NV')
     os.makedirs(new_order_path, exist_ok=True)
 
@@ -522,19 +582,41 @@ def create_and_copy_order(output_path, input_path, GDS):
         os.makedirs(os.path.join(new_order_path, 'SB_DSM_PUNKTWOLKE'), exist_ok=True)
         os.makedirs(os.path.join(output_path, 'PrecalculatedFormats', 'SB_DSM_PUNKTWOLKE'), exist_ok=True)
 
+    files_to_copy = sorted(fn for fn in os.listdir(input_path)
+                            if os.path.isfile(os.path.join(input_path, fn)))
+
     log("\nStarte Kopiervorgang...\n")
+
+    if workers is None:
+        workers = _default_worker_count()
+    workers = max(1, min(workers, len(files_to_copy) or 1))
+
+    def _copy_one(file_name):
+        copy_with_retry(os.path.join(input_path, file_name), os.path.join(new_order_path, file_name))
+
     nb = 0
-    for file_name in sorted(os.listdir(input_path)):
-        source_file = os.path.join(input_path, file_name)
-        if os.path.isfile(source_file):
-            dst = os.path.join(new_order_path, file_name)
+    if workers <= 1 or len(files_to_copy) <= 1:
+        for file_name in files_to_copy:
             try:
-                copy_with_retry(source_file, dst)
+                _copy_one(file_name)
                 nb += 1
-                log(f"Datei {nb} kopiert: {file_name}")
+                log(f"Datei {nb}/{len(files_to_copy)} kopiert: {file_name}")
             except Exception as e:
                 log(f"Fehler beim Kopieren {file_name}: {e}")
-    log("Kopiervorgang abgeschlossen.")
+    else:
+        log(f"Parallelisierung: {workers} gleichzeitige Kopier-Worker (verfuegbare Kerne: {os.cpu_count()}).")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_name = {executor.submit(_copy_one, fn): fn for fn in files_to_copy}
+            for future in as_completed(future_to_name):
+                file_name = future_to_name[future]
+                try:
+                    future.result()
+                    nb += 1
+                    log(f"Datei {nb}/{len(files_to_copy)} kopiert: {file_name}")
+                except Exception as e:
+                    log(f"Fehler beim Kopieren {file_name}: {e}")
+
+    log(f"Kopiervorgang abgeschlossen ({nb}/{len(files_to_copy)} erfolgreich).")
 
 # ****************************** Working Part ******************************
 # Wird nur ausgeführt wenn das Script direkt gestartet wird (nicht bei Import).
