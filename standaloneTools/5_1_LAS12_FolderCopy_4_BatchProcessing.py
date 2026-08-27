@@ -48,8 +48,8 @@ Verwendung (aus dem Projekt-Hauptverzeichnis):
 
 Konkret im OSGeo4W-Terminal, im Projekt-Hauptverzeichnis ausgefuehrt (Beispiel mit "--dry-run"):
 
-cd "c:\Users\Lukas Urwyler\Documents\01_GeoData\02_pyScripts\01_swisstopo\topo-importDATAtoGDWH-STAC"
-python standaloneTools\5_1_LAS12_FolderCopy_4_BatchProcessing.py --pfad-liste "C:\Pfad\zu\LAS12_PfadListe.txt" --dry-run
+cd "U:\05_pyScripts\01_Tools\1_topo-importDATAtoGDWH-STAC\standaloneTools" 
+python 5_1_LAS12_FolderCopy_4_BatchProcessing.py --pfad-liste "...\LAS12_PfadListe.txt" --dry-run
 """
 
 import argparse
