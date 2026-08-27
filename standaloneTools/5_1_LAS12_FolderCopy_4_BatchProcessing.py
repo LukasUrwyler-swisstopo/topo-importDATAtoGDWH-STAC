@@ -53,12 +53,17 @@ python "U:\05_pyScripts\01_Tools\1_topo-importDATAtoGDWH-STAC\standaloneTools\5_
 
 import argparse
 import os
+import re
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 LISTE_UNTERORDNER = "Liste_for_Batch_script_LAS12-LAS14"
+# Zentraler Log-Ordner fuer beide Batch-Scripts (5_1 und 5) - unabhaengig von
+# --dest-root/--staging-root, damit alle Laeufe an einem Ort auffindbar sind.
+LOG_ROOT = r"Y:\01_GDWH-STAC_ArchivCopy\_logs"
+_JAHR_MUSTER = re.compile(r"^(19|20)\d{2}$")
 
 # ****************************** Log-Funktion ******************************
 _log_file_handle = None
@@ -115,6 +120,19 @@ def jahr_und_relpfad(src_folder):
         raise ValueError(f"Kein Unterordner nach Laufwerk gefunden: {src_folder}")
     jahr = rel.split(os.sep)[0]
     return jahr, rel
+
+
+def ermittle_jahre(folders):
+    """Ermittelt alle eindeutigen Jahre (aufsteigend sortiert) aus den
+    Quellordner-Pfaden - jeder Pfad-Bestandteil, der wie ein Jahr aussieht
+    (z.B. '2024'), fuer den Log-Dateinamen (koennen mehrere Jahre sein, wenn
+    die Pfadliste mehrere Jahresordner umfasst)."""
+    jahre = set()
+    for folder in folders:
+        for teil in os.path.normpath(folder).split(os.sep):
+            if _JAHR_MUSTER.match(teil):
+                jahre.add(teil)
+    return sorted(jahre)
 
 
 # ****************************** Dateikopie ******************************
@@ -180,6 +198,7 @@ def run_copy(folders, dest_root, overwrite, dry_run, workers, summary):
         except ValueError as e:
             log(f"  [FEHLER] {e}")
             summary["folders_failed"] += 1
+            summary["not_processed"].append(f"{src_folder}: {e}")
             continue
 
         dest_folder = os.path.join(dest_root, rel)
@@ -187,6 +206,7 @@ def run_copy(folders, dest_root, overwrite, dry_run, workers, summary):
         if not laz_files:
             log(f"  [WARNUNG] Keine .laz-Dateien gefunden, uebersprungen: {src_folder}")
             summary["folders_failed"] += 1
+            summary["not_processed"].append(f"{src_folder}: keine .laz-Dateien gefunden")
             continue
 
         log(f"  {src_folder}  (Jahr: {jahr})")
@@ -270,7 +290,7 @@ def main():
                         help="Nur Vorschau - nichts anlegen/kopieren/schreiben")
     parser.add_argument("--workers", type=int, default=4,
                         help="Anzahl gleichzeitiger Kopier-Worker (Default: 4)")
-    parser.add_argument("--log-file", help="Pfad fuer die Log-Datei (Default: <dest-root>\\logs\\...)")
+    parser.add_argument("--log-file", help=f"Pfad fuer die Log-Datei (Default: {LOG_ROOT}\\...)")
     args = parser.parse_args()
 
     if args.workers < 1:
@@ -278,16 +298,18 @@ def main():
     if not os.path.isfile(args.pfad_liste):
         parser.error(f"--pfad-liste nicht gefunden: {args.pfad_liste}")
 
+    folders, folder_problems = read_pfad_liste(args.pfad_liste)
+
     log_path = args.log_file
     if not log_path:
-        log_dir = os.path.join(args.dest_root, "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(log_dir, f"LAS12_FolderCopy_{datetime.now():%Y%m%d_%H%M%S}.log")
+        os.makedirs(LOG_ROOT, exist_ok=True)
+        jahre = ermittle_jahre(folders)
+        jahr_suffix = ("_" + "_".join(jahre)) if jahre else ""
+        log_path = os.path.join(LOG_ROOT, f"LAS12_FolderCopy{jahr_suffix}_{datetime.now():%Y%m%d_%H%M%S}.log")
     os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
     _log_file_handle = open(log_path, "w", encoding="utf-8")
     log(f"Log-Datei: {log_path}")
 
-    folders, folder_problems = read_pfad_liste(args.pfad_liste)
     log("=== LAS 1.2 Archiv-Ordnerkopie ===")
     log(f"Pfadliste: {args.pfad_liste}")
     log(f"Ziel-Root: {args.dest_root}")
@@ -302,7 +324,8 @@ def main():
         sys.exit(1)
 
     summary = {"folders_ok": 0, "folders_failed": len(folder_problems), "files_total": 0,
-               "files_copied": 0, "files_skipped": 0, "files_failed": 0, "failed_files": []}
+               "files_copied": 0, "files_skipped": 0, "files_failed": 0, "failed_files": [],
+               "not_processed": list(folder_problems)}
     start = datetime.now()
     dest_folders = run_copy(folders, args.dest_root, args.overwrite, args.dry_run, args.workers, summary)
     duration = datetime.now() - start
@@ -314,10 +337,14 @@ def main():
         f"{summary['files_skipped']} bereits vorhanden, {summary['files_failed']} fehlgeschlagen, "
         f"Laufzeit {duration} ===")
 
-    if summary["failed_files"]:
-        log("\nFehlgeschlagene Dateien:")
+    if summary["not_processed"] or summary["failed_files"]:
+        log("\n=== Nicht verarbeitet / fehlgeschlagen ===")
+        for grund in summary["not_processed"]:
+            log(f"  - {grund}")
         for tag, error in summary["failed_files"]:
             log(f"  - {tag}: {error}")
+    else:
+        log("\nAlle Quellordner und Dateien erfolgreich verarbeitet.")
 
     if args.dry_run:
         log("\n[DRY-RUN] Ergebnisliste wird nicht geschrieben.")

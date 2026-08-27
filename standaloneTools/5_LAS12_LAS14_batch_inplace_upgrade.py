@@ -62,18 +62,23 @@ _find_pdal_exe).
 
 Konkret im OSGeo4W-Terminal, im Projekt-Hauptverzeichnis ausgefuehrt (Beispiel mit "--dry-run"):
 
-python "U:\05_pyScripts\01_Tools\1_topo-importDATAtoGDWH-STAC\standaloneTools\5_LAS12_LAS14_batch_inplace_upgrade.py" --folder-list "...\<Jahre>_Liste_for_Batch_scriptLAS12-LAS14.txt" --staging-root "Y:\00_Temp" --dry-run
+python "U:\05_pyScripts\01_Tools\1_topo-importDATAtoGDWH-STAC\standaloneTools\5_LAS12_LAS14_batch_inplace_upgrade.py" --folder-list "Y:\01_GDWH-STAC_ArchivCopy\Liste_for_Batch_script_LAS12-LAS14\VDI-Transfer_Liste_for_Batch_scriptLAS12-LAS14.txt" --staging-root "Y:\00_GDWH-STAC_tempProcessingFolder\LAS12toLAS14" --dry-run
 """
 
 import argparse
 import importlib.util
 import os
+import re
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 SCRIPT4_FILENAME = "4_SB_DSM_PUNKTWOLKE_LAS14upgrade.py"
+# Zentraler Log-Ordner fuer beide Batch-Scripts (5_1 und 5) - unabhaengig von
+# --dest-root/--staging-root, damit alle Laeufe an einem Ort auffindbar sind.
+LOG_ROOT = r"Y:\01_GDWH-STAC_ArchivCopy\_logs"
+_JAHR_MUSTER = re.compile(r"^(19|20)\d{2}$")
 # Suffix der Temp-Datei fuer das atomare Zurueckschreiben im Original-
 # Verzeichnis (siehe finalize_tile) - wird beim Start jedes Laufs pro Ordner
 # aufgeraeumt (siehe cleanup_stray_tmp_files), falls von einem abgebrochenen
@@ -136,6 +141,19 @@ def read_folder_list(list_path):
                 continue
             folders.append(path)
     return folders, problems
+
+
+def ermittle_jahre(folders):
+    """Ermittelt alle eindeutigen Jahre (aufsteigend sortiert) aus den
+    Ordnerpfaden - jeder Pfad-Bestandteil, der wie ein Jahr aussieht (z.B.
+    '2024'), fuer den Log-Dateinamen (koennen mehrere Jahre sein, wenn die
+    Ordnerliste mehrere Jahresordner umfasst)."""
+    jahre = set()
+    for folder in folders:
+        for teil in os.path.normpath(folder).split(os.sep):
+            if _JAHR_MUSTER.match(teil):
+                jahre.add(teil)
+    return sorted(jahre)
 
 
 def staging_dir_for(input_dir, staging_root, used_names):
@@ -322,6 +340,9 @@ def run_batch(mod4, folders, staging_root, target_scale, dry_run, workers, summa
             summary["failed_files"].append((folder, err))
 
         if not valid_names:
+            if not name_errors:
+                log(f"  [WARNUNG] Keine .laz-Dateien gefunden, uebersprungen: {folder}")
+                summary["not_processed"].append(f"{folder}: keine .laz-Dateien gefunden")
             continue
 
         staging_dir = staging_dir_for(folder, staging_root, used_staging_names)
@@ -392,7 +413,7 @@ def main():
     parser.add_argument("--workers", type=int, default=None,
                         help="Anzahl gleichzeitiger PDAL-Worker (Default: automatisch, siehe Script 4 "
                              "_default_worker_count). --workers 1 erzwingt seriellen Ablauf.")
-    parser.add_argument("--log-file", help="Pfad fuer die Log-Datei (Default: <staging-root>\\logs\\...)")
+    parser.add_argument("--log-file", help=f"Pfad fuer die Log-Datei (Default: {LOG_ROOT}\\...)")
     args = parser.parse_args()
 
     if args.workers is not None and args.workers < 1:
@@ -402,11 +423,14 @@ def main():
 
     mod4 = _lade_script4()
 
+    folders, folder_problems = read_folder_list(args.folder_list)
+
     log_path = args.log_file
     if not log_path:
-        log_dir = os.path.join(args.staging_root, "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(log_dir, f"LAS12_LAS14_inplace_{datetime.now():%Y%m%d_%H%M%S}.log")
+        os.makedirs(LOG_ROOT, exist_ok=True)
+        jahre = ermittle_jahre(folders)
+        jahr_suffix = ("_" + "_".join(jahre)) if jahre else ""
+        log_path = os.path.join(LOG_ROOT, f"LAS12_LAS14_inplace{jahr_suffix}_{datetime.now():%Y%m%d_%H%M%S}.log")
     os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
     _log_file_handle = open(log_path, "w", encoding="utf-8")
     # Script-4-eigene log()-Aufrufe (z.B. die Dry-Run-Vorschauzeile in
@@ -414,7 +438,6 @@ def main():
     mod4._log_file_handle = _log_file_handle
     log(f"Log-Datei: {log_path}")
 
-    folders, folder_problems = read_folder_list(args.folder_list)
     log(f"=== LAS 1.2 -> LAS 1.4 Batch-Inplace-Upgrade ===")
     log(f"Ordnerliste: {args.folder_list}")
     log(f"Staging-Root: {args.staging_root}")
@@ -432,7 +455,8 @@ def main():
     log(f"Worker: {workers}"
         + (f" (automatisch von {os.cpu_count()} Kernen)" if args.workers is None else " (manuell)") + "\n")
 
-    summary = {"total": 0, "ok": 0, "warning": 0, "skipped": 0, "failed": 0, "failed_files": []}
+    summary = {"total": 0, "ok": 0, "warning": 0, "skipped": 0, "failed": 0, "failed_files": [],
+               "not_processed": list(folder_problems)}
     start = datetime.now()
     run_batch(mod4, folders, args.staging_root, args.target_scale, args.dry_run, workers, summary)
     duration = datetime.now() - start
@@ -442,10 +466,14 @@ def main():
         f"{summary['skipped']} bereits migriert, {summary['failed']} fehlgeschlagen, "
         f"Laufzeit {duration} ===")
 
-    if summary["failed_files"]:
-        log("\nFehlgeschlagene Dateien:")
+    if summary["not_processed"] or summary["failed_files"]:
+        log("\n=== Nicht verarbeitet / fehlgeschlagen ===")
+        for grund in summary["not_processed"]:
+            log(f"  - {grund}")
         for tag, error in summary["failed_files"]:
             log(f"  - {tag}: {error}")
+    else:
+        log("\nAlle Ordner und Tiles erfolgreich verarbeitet.")
 
     _log_file_handle.close()
     sys.exit(1 if summary["failed"] else 0)
