@@ -1,4 +1,4 @@
-print("\nVersion 2.6.0 (SB_DSM: -9999-Sentinel-Pixel aus LAStools-Pipeline automatisch auf reales Raster-Minimum angehoben, siehe fix_dsm_sentinel_minimum | Opt: parallele Kachel-Verarbeitung/Kopieren via ThreadPoolExecutor fuer SB_DOP/SB_DOP_16/SB_DSM/SB_DSM_PUNKTWOLKE, files.csv weiterhin deterministisch/seriell geschrieben | Bugfixes: WKT-Polygon, CSV-Leerzeile, GDAL-Handles, src-Parameter, Index-Guards | Stabilität: Log-Cleanup vollständig, Pfadprüfung, makedirs-Timing | Opt: MD5-Chunks 64KB, Fortschrittsanzeige, Traceback-Logging)\n")
+print("\nVersion 2.6.1 (SB_DSM: historische falsche NoData-Pixel -9999 (LAStools, vom frueheren Extract-by-Mask nicht erfasst) werden automatisch auf den echten NoData-Wert korrigiert, siehe fix_dsm_false_nodata | Opt: parallele Kachel-Verarbeitung/Kopieren via ThreadPoolExecutor fuer SB_DOP/SB_DOP_16/SB_DSM/SB_DSM_PUNKTWOLKE, files.csv weiterhin deterministisch/seriell geschrieben | Bugfixes: WKT-Polygon, CSV-Leerzeile, GDAL-Handles, src-Parameter, Index-Guards | Stabilität: Log-Cleanup vollständig, Pfadprüfung, makedirs-Timing | Opt: MD5-Chunks 64KB, Fortschrittsanzeige, Traceback-Logging)\n")
 
 import os
 import re
@@ -291,33 +291,34 @@ def get_nodata_value(filename, GDS, meta_info):
     return meta_info.get("NoData", "")
 
 
-# SB_DSM (DSM-Raster, nicht Hillshade): fixer Artefaktwert aus der LAStools-
-# Pipeline bei der DSM-Erzeugung (Autokorrelation) - sehr wenige Pixel,
-# IMMER exakt -9999 (kein Toleranzbereich, vom Nutzer bestaetigt). Kein
-# echter NoData-Wert (der ist bereits korrekt -3.4028235e+38, siehe
-# get_nodata_value) - in der Schweiz gibt es keine realen Hoehen unter
-# -9999m, das ist eindeutig ein Pipeline-Artefakt.
-DSM_SENTINEL_VALUE = -9999.0
+# SB_DSM (DSM-Raster, nicht Hillshade): historischer falscher NoData-Wert aus
+# der urspruenglichen LAStools-DSM-Erzeugung, IMMER exakt -9999 (kein
+# Toleranzbereich, vom Nutzer bestaetigt). Ein spaeteres "Extract by Mask"
+# (ArcMap) hat NoData-Bereiche INNERHALB des Masken-Polygons bereits korrekt
+# auf den echten NoData-Wert -3.4028235e+38 umgeschrieben (siehe
+# get_nodata_value); Flaechen AUSSERHALB der Maske blieben mit dem alten
+# falschen -9999 stehen. Das sind also echte NoData-Pixel, keine gueltigen
+# Hoehenwerte - in der Schweiz gibt es keine realen Hoehen unter -9999m.
+DSM_FALSE_NODATA_VALUE = -9999.0
 
 
-def fix_dsm_sentinel_minimum(file_path, sentinel_value=DSM_SENTINEL_VALUE,
-                              nodata_value=None, chunk_rows=1000):
+def fix_dsm_false_nodata(file_path, false_nodata_value=DSM_FALSE_NODATA_VALUE,
+                          nodata_value=None, chunk_rows=1000):
     """
-    Ersetzt Pixel mit dem fixen Sentinel-Wert (siehe DSM_SENTINEL_VALUE) durch
-    das tatsaechliche Minimum aller gueltigen (weder NoData noch Sentinel)
-    Pixel im selben Band - dadurch verzerrt der Sentinel-Wert nicht mehr die
-    COG/STAC-Statistik (Minimum) des DSM-Rasters.
+    Korrigiert Pixel mit dem historischen falschen NoData-Wert (siehe
+    DSM_FALSE_NODATA_VALUE) auf den echten NoData-Wert (nodata_value) -
+    dadurch werden diese Pixel korrekt als NoData erkannt/getaggt, statt als
+    (falsche) gueltige Hoehenwerte in die COG/STAC-Statistik einzufliessen.
 
-    Zwei chunk-weise Lesedurchgaenge (Chunk-Groesse wie _compute_nodata_mask):
-      1. Globales Minimum der gueltigen Pixel ermitteln (und Sentinel-Pixel
-         zaehlen).
-      2. NUR falls Sentinel-Pixel gefunden wurden: Chunks mit mindestens
-         einem Sentinel-Pixel neu einlesen und schreiben. Ohne Treffer wird
-         NICHTS auf die Platte geschrieben (Datei bleibt byte-identisch).
+    Chunk-weiser Lesedurchgang (Chunk-Groesse wie _compute_nodata_mask):
+    Chunks mit mindestens einem falschen NoData-Pixel werden neu eingelesen
+    und geschrieben. Ohne Treffer wird NICHTS auf die Platte geschrieben
+    (Datei bleibt byte-identisch).
 
-    Gibt (n_sentinel_px, min_value) zurueck. Bei n_sentinel_px == 0 ist
-    min_value None.
+    Gibt n_fixed_px (Anzahl korrigierter Pixel) zurueck.
     """
+    if nodata_value is None:
+        raise ValueError("fix_dsm_false_nodata benoetigt einen echten nodata_value zum Korrigieren.")
     ds = gdal.Open(file_path, gdal.GA_Update)
     if ds is None:
         raise FileNotFoundError(f"Konnte Raster nicht zum Schreiben oeffnen: {file_path}")
@@ -325,37 +326,17 @@ def fix_dsm_sentinel_minimum(file_path, sentinel_value=DSM_SENTINEL_VALUE,
         band = ds.GetRasterBand(1)
         x_size, y_size = ds.RasterXSize, ds.RasterYSize
 
-        global_min = None
-        n_sentinel = 0
+        n_fixed = 0
         for y_off in range(0, y_size, chunk_rows):
             rows = min(chunk_rows, y_size - y_off)
             arr = band.ReadAsArray(0, y_off, x_size, rows)
-            is_sentinel = (arr == sentinel_value)
-            n_sentinel += int(is_sentinel.sum())
-            valid = ~is_sentinel
-            if nodata_value is not None:
-                valid &= (arr != nodata_value)
-            if valid.any():
-                chunk_min = float(arr[valid].min())
-                if global_min is None or chunk_min < global_min:
-                    global_min = chunk_min
-
-        if n_sentinel == 0:
-            return 0, None
-        if global_min is None:
-            raise ValueError(
-                f"Keine gueltigen (nicht-NoData/-Sentinel) Pixel gefunden in "
-                f"'{os.path.basename(file_path)}' - Minimum kann nicht bestimmt werden.")
-
-        for y_off in range(0, y_size, chunk_rows):
-            rows = min(chunk_rows, y_size - y_off)
-            arr = band.ReadAsArray(0, y_off, x_size, rows)
-            is_sentinel = (arr == sentinel_value)
-            if is_sentinel.any():
-                arr[is_sentinel] = global_min
+            is_false_nodata = (arr == false_nodata_value)
+            if is_false_nodata.any():
+                n_fixed += int(is_false_nodata.sum())
+                arr[is_false_nodata] = nodata_value
                 band.WriteArray(arr, 0, y_off)
 
-        return n_sentinel, global_min
+        return n_fixed
     finally:
         ds.FlushCache()
         ds = None
@@ -875,17 +856,17 @@ def _process_tile(fn, src, out, GDS, meta, cached_attrs):
             is_sb_dsm_raster = GDS == "SB_DSM" and "_hillshade_" not in fn.lower()
 
             if is_sb_dsm_raster:
-                # LAStools-Pipeline-Artefakt (siehe DSM_SENTINEL_VALUE): sehr
-                # wenige Pixel mit fixem Wert -9999, IMMER exakt, kein echter
-                # NoData (der ist bereits korrekt -3.4028235e+38). Vor dem
-                # NoData-Tag auf das reale Minimum des Rasters anheben, damit
-                # die spaetere COG/STAC-Statistik (Minimum) nicht verzerrt
-                # wird - laeuft automatisch, keine GUI-Option noetig.
-                n_fixed, fixed_min = fix_dsm_sentinel_minimum(
+                # Historischer falscher NoData-Wert (siehe DSM_FALSE_NODATA_VALUE):
+                # sehr wenige Pixel mit fixem Wert -9999, IMMER exakt - echte
+                # NoData-Pixel, die vom frueheren "Extract by Mask" nicht erfasst
+                # wurden. Vor dem NoData-Tag auf den echten NoData-Wert korrigieren,
+                # damit sie korrekt als NoData erkannt werden - laeuft automatisch,
+                # keine GUI-Option noetig.
+                n_fixed = fix_dsm_false_nodata(
                     fp, nodata_value=float(nodata_str) if nodata_str else None)
                 if n_fixed:
-                    log(f"  {fn}: {n_fixed} Sentinel-Pixel ({DSM_SENTINEL_VALUE}) "
-                        f"auf Minimum {fixed_min:.3f} angehoben.")
+                    log(f"  {fn}: {n_fixed} falsche NoData-Pixel ({DSM_FALSE_NODATA_VALUE}) "
+                        f"auf NoData ({nodata_str}) korrigiert.")
 
             if nodata_str:
                 # nodata_str (Quellwert, z.B. "255 255 255") wird nur fuer die

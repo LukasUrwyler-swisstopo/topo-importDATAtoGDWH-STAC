@@ -178,6 +178,7 @@ Bereinigung läuft erst nach dem Sicherheitscheck; bei Abbruch wird nichts gelö
 Korrekturwerte sind fix im Skript hinterlegt (keine GUI-/CLI-Parameter): falsche 255er-Gruppen werden um −1 verschoben, nahe-schwarze Schattenpixel gestuft angehoben. Bei NoData-Wahl `255 255 255` werden zusätzlich alle echten NoData-Pixel auf `0 0 0` normalisiert (GDAL-Tag und XML sind bei SB_DOP ohnehin immer `0`-normalisiert).
 
 **Bekannte Design-Entscheidungen:**
+- `SB_DSM` DSM-Raster (nicht Hillshade): historische falsche NoData-Pixel mit dem festen Wert `-9999` (aus der ursprünglichen LAStools-DSM-Erzeugung) werden vor dem NoData-Tag automatisch auf den echten NoData-Wert `-3.4028235e+38` korrigiert (`fix_dsm_false_nodata`). Hintergrund: ein früheres "Extract by Mask" (ArcMap) hat NoData-Bereiche *innerhalb* des Masken-Polygons bereits korrekt umgeschrieben, Flächen *ausserhalb* der Maske blieben mit dem alten falschen `-9999` stehen. Läuft automatisch, keine GUI-Option nötig.
 - SB_DSM DSM-Raster (nicht Hillshade) erhält nur den NoData-Tag, keine interne Maske – bei Hillshade bleibt die Maske aktiv.
 - Die Maske wird immer erst vollständig im Speicher berechnet und erst bei Erfolg geschrieben (Fail-Safe gegen halbfertige Masken).
 - Ist bei `SB_DOP` mit NoData `0 0 0` bereits eine interne Maske vorhanden (z.B. fortgesetzter Lauf), wird die Neuberechnung übersprungen.
