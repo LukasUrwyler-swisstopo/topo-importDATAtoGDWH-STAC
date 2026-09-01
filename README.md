@@ -171,7 +171,7 @@ Prüft die reinen Python-Funktionen ohne OSGeo4W/GDAL-Abhängigkeit (Mock).
 Bereinigung läuft erst nach dem Sicherheitscheck; bei Abbruch wird nichts gelöscht.
 
 **Klassifikation falscher NoData-Pixel** (`3_fix_false_nodata_dop.py`, Connected-Component-Labeling):
-- Grösse der Pixelgruppe ≥ Schwelle (Default 25'000 Pixel)
+- Grösse der Pixelgruppe ≥ Schwelle (Default: automatisch pro Tile aus der GSD berechnet, entsprechend 900 m² – siehe `DEFAULT_MIN_NODATA_AREA_M2`; die frühere fixe Schwelle von 25'000 Pixel entsprach bei 10cm GSD nur 250 m² und war für alpines Gelände zu knapp bemessen)
 - Randkontakt zum Tile-Rand (Default ≥100 Pixel)
 - Zusätzliche Rand-/Füllgrad-Prüfungen existieren als CLI-Flags (`--enable-gradient-check`, `--enable-fill-ratio-check`), sind aber standardmässig **deaktiviert**, da sie bei weich ausgeblendeten Mosaikkanten (Feathering) zu Fehlklassifikationen führen können.
 

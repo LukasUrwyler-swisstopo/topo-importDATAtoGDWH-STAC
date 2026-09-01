@@ -47,7 +47,8 @@ Vorgehen:
      kurz beruehren).
   4. Klassifikation, vier Bedingungen nacheinander (jede nur geprueft, wenn
      die vorherige erfuellt ist - spart die teureren Stufen im Regelfall):
-       A) Groesse >= THRESHOLD (Default 25000 Pixel)?
+       A) Groesse >= THRESHOLD (Default: automatisch aus der GSD berechnet,
+          entsprechend 900 m², siehe DEFAULT_MIN_NODATA_AREA_M2)?
        B) Randkontakt vorhanden (> 0 Pixel)?
        C) Randkontakt >= MIN_BORDER_CONTACT (Default 100 Pixel)?
        D) Nur fuer den nicht auf dem Tile-Rand liegenden Teil des inneren
@@ -121,6 +122,15 @@ FALSE_NODATA_255_SHIFT = -1
 # statt eines scharfen Sprungs allein bei exakt 0,0,0.
 SHADOW_BUFFER_MAX_VALUE = 5
 SHADOW_BUFFER_TIERS = {0: 5, 1: 4, 2: 3, 3: 2, 4: 1, 5: 1}
+
+# Stufe-A-Mindestgroesse (siehe classify_mask) als Flaeche statt fixer
+# Pixelzahl: die fruehere fixe Schwelle (25000 px, bei 10cm GSD = 250 m²)
+# war fuer alpines Gelaende zu knapp - ein einzelner ueberstrahlter
+# Firn-/Schneefleck an einer (willkuerlichen) Kachelgrenze konnte das schon
+# ueberschreiten. process_tile() rechnet dies pro Tile anhand der
+# tatsaechlichen Pixelgroesse aus dem GeoTransform in eine Pixelzahl um,
+# damit die Schwelle unabhaengig von der GSD dieselbe reale Flaeche meint.
+DEFAULT_MIN_NODATA_AREA_M2 = 900.0
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +465,7 @@ def _copy_sidecar_tfw(src_path, dst_path):
     return None
 
 
-def process_tile(src_path, dst_path, threshold=25000,
+def process_tile(src_path, dst_path, threshold=None,
                   connectivity=8, write_tfw=False,
                   strip_existing_mask=False, fallback_epsg=2056,
                   nodata_value=0, write_mask=False,
@@ -467,6 +477,13 @@ def process_tile(src_path, dst_path, threshold=25000,
     Liest ein RGB-Tile, korrigiert falsche NoData-Pixel und schreibt das
     Ergebnis nach dst_path. Gibt Zusammenfassungszahlen und alle
     klassifizierten Gruppen zurueck (fuer den CSV-Report/Diagnose).
+
+    threshold:
+      Stufe-A-Mindestgroesse fuer classify_mask, in Pixeln. None (Default)
+      -> wird pro Tile aus dem GeoTransform berechnet, sodass sie
+      DEFAULT_MIN_NODATA_AREA_M2 (900 m²) entspricht, unabhaengig von der
+      GSD des Tiles (siehe Konstante oben). Explizit gesetzter Wert
+      uebersteuert die Automatik (z.B. fuer Tests/Tuning).
 
     nodata_value:
       Der zu korrigierende NoData-Zielwert (0 -> schwarz, 255 -> weiss),
@@ -570,6 +587,11 @@ def process_tile(src_path, dst_path, threshold=25000,
 
     xsize = ds.RasterXSize
     ysize = ds.RasterYSize
+
+    if threshold is None:
+        gt = ds.GetGeoTransform()
+        pixel_area_m2 = abs(gt[1] * gt[5])
+        threshold = max(1, round(DEFAULT_MIN_NODATA_AREA_M2 / pixel_area_m2))
 
     band_arrays = [ds.GetRasterBand(i).ReadAsArray() for i in range(1, n_bands + 1)]
     dtype = band_arrays[0].dtype
@@ -810,8 +832,10 @@ def main():
     parser.add_argument("--output", help="Output-Pfad fuer Einzeltile")
     parser.add_argument("--input-dir", help="Ordner mit Input-Tiles (.tif)")
     parser.add_argument("--output-dir", help="Zielordner fuer korrigierte Tiles")
-    parser.add_argument("--threshold", type=int, default=25000,
-                         help="Gruppen ab dieser Groesse gelten als echtes NoData, darunter als falsch (Default: 25000)")
+    parser.add_argument("--threshold", type=int, default=None,
+                         help="Gruppen ab dieser Groesse (Pixel) gelten als echtes NoData, darunter als falsch. "
+                              "Default: automatisch pro Tile aus der GSD berechnet, entsprechend 900 m² "
+                              "(DEFAULT_MIN_NODATA_AREA_M2). Explizit gesetzter Wert uebersteuert die Automatik.")
     parser.add_argument("--min-border-contact", type=int, default=100,
                          help="Dritte Bedingung fuer echtes NoData: Gruppe muss zusaetzlich zur Groesse "
                               "ueber mindestens so viele Pixel den Tile-Rand beruehren (Summe ueber alle "

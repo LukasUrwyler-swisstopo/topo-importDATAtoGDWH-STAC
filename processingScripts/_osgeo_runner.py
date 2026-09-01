@@ -77,6 +77,7 @@ def _run_fix_false_nodata(mod3, quelle, meta, workers=None):
         print("[WARNUNG] Vorkorrektur uebersprungen: kein NoData-Wert gesetzt.", flush=True)
         return
     nodata_value = int(float(nodata_tokens[0]))
+    print(f"NoData-Zielwert fuer Vorkorrektur (aus GUI-Auswahl): {nodata_value}", flush=True)
 
     tif_files = sorted(
         fn for fn in os.listdir(quelle)

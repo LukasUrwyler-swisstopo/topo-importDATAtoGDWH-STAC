@@ -912,7 +912,10 @@ class TestFixNodataSicherheitsDefaults(unittest.TestCase):
 
     def test_process_tile_defaults(self):
         sig = inspect.signature(fixnodata.process_tile)
-        self.assertEqual(sig.parameters["threshold"].default, 25000)
+        # threshold=None -> wird pro Tile aus der GSD berechnet (900 m²,
+        # siehe DEFAULT_MIN_NODATA_AREA_M2), statt eines fixen Pixelwerts.
+        self.assertIsNone(sig.parameters["threshold"].default)
+        self.assertEqual(fixnodata.DEFAULT_MIN_NODATA_AREA_M2, 900.0)
         self.assertNotIn("increment", sig.parameters)
         self.assertEqual(sig.parameters["min_border_contact"].default, 100)
         self.assertFalse(sig.parameters["enable_gradient_check"].default)

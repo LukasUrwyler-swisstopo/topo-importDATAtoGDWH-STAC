@@ -2032,6 +2032,14 @@ class GDWHApp(tk.Tk):
         if not self.ziel_var.get().strip():
             errors.append("Ziel fehlt.")
 
+        if gds not in ("SB_DSM", "SB_DSM_PUNKTWOLKE"):
+            opts = NODATA_D16_OPT if gds == "SB_DOP_16" else NODATA_DOP_OPT
+            if self.nodata_var.get() not in opts:
+                errors.append(
+                    "Input NoData: keine gültige Auswahl erkannt.\n"
+                    "Bitte den NoData-Wert im Dropdown erneut auswählen."
+                )
+
         if errors:
             messagebox.showerror("Eingabe-Fehler",
                                   "\n\n".join(f"• {e}" for e in errors), parent=self)
@@ -2045,7 +2053,13 @@ class GDWHApp(tk.Tk):
         val  = self.nodata_var.get()
         opts = NODATA_D16_OPT if gds == "SB_DOP_16" else NODATA_DOP_OPT
         vals = NODATA_D16_VAL if gds == "SB_DOP_16" else NODATA_DOP_VAL
-        idx  = opts.index(val) if val in opts else 0
+        if val not in opts:
+            # _validate() prueft das bereits vor jedem Start (siehe dort) und
+            # verhindert, dass wir hier ueberhaupt ankommen - kein stiller
+            # Fallback auf "0 0 0" mehr, das haette frueher einen falsch
+            # gewaehlten NoData-Wert unbemerkt auf schwarz zurückfallen lassen.
+            raise ValueError(f"Ungueltige NoData-Auswahl fuer {gds}: {val!r}")
+        idx = opts.index(val)
         return vals[idx]
 
     def _build_meta_info(self):
